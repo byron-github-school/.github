@@ -1,0 +1,13 @@
+name: Test workflow template
+
+on:
+  push:
+    branches: [ $default-branch ]
+
+jobs:
+  echo:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Run a one-line script
+        run: echo "Hello this is a workflow template"
