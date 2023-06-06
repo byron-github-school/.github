@@ -1,4 +1,4 @@
-name: Test workflow template
+name: Test workflow template for Actions training
 
 on:
   push:
