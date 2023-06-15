@@ -2,7 +2,7 @@ name: Test workflow template for Actions training
 
 on:
   push:
-    branches: [ $default-branch, "release" ]
+    branches: [ $default-branch ]
 
 jobs:
   echo:
