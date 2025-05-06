@@ -1,0 +1,5 @@
+{
+    "name": "pull-project-tasks workflow template",
+    "description": "This workflow will replicate issues and tasks from the Enineering Playbook's Audit Framework MACS Template Project. Use this when starting a new custom application development project to create the set of deliverables specificed for the Engineering Playbook.",
+    "iconName": "pull-project-tasks"
+}
