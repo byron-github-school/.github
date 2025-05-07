@@ -104,6 +104,7 @@ jobs:
         # Process each top-level issue
         for issue in $TOP_LEVEL_ISSUES; do
           ISSUE_NUMBER=$(echo $issue | jq -r '.number')
+          echo "Processing top-level issue #$ISSUE_NUMBER"
           fetch_subissues "$ISSUE_NUMBER"
         done
 
