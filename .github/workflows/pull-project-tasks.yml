@@ -46,19 +46,31 @@ jobs:
 
           echo "Processing issue #$issue_number"
 
-          # Fetch sub-issues for the current issue
-          curl -s -H "Authorization: token $GITHUB_TOKEN" \
-            "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues/$issue_number/sub-issues" > subissues_response.json
+        # Fetch sub-issues for the current issue
+        curl -s -H "Authorization: token $GITHUB_TOKEN" \
+          "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues/$issue_number/sub-issues" > subissues_response.json
 
-          echo "Raw response for sub-issues of issue #$issue_number:"
-          cat subissues_response.json
+        echo "Raw response for sub-issues of issue #$issue_number:"
+        cat subissues_response.json
 
-          SUBISSUES=$(cat subissues_response.json | jq -c '.[]' || echo "[]")
+        # Check if response is empty first
+        if [ ! -s subissues_response.json ]; then
+          echo "No sub-issues found for issue #$issue_number (empty response)"
+          return
+        fi
 
-          if [ -z "$SUBISSUES" ] || [ "$SUBISSUES" == "[]" ]; then
-            echo "No sub-issues found for issue #$issue_number"
-            return
-          fi
+        # Check if response contains a 404 status
+        if jq -e '.status == "404"' subissues_response.json > /dev/null; then
+          echo "No sub-issues found for issue #$issue_number (404 status)"
+          return
+        fi
+
+        SUBISSUES=$(jq -c '.[]' subissues_response.json)
+
+        if [ -z "$SUBISSUES" ] || [ "$SUBISSUES" == "[]" ]; then
+          echo "No sub-issues found for issue #$issue_number"
+          return
+        fi
 
           # Validate JSON before processing
           if ! jq empty parent_child_links.json; then
