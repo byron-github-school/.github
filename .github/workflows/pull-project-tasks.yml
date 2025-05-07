@@ -96,7 +96,7 @@ jobs:
 
         echo "Top-level issues:"
         echo "$TOP_LEVEL_ISSUES" | jq -r '.number'
-
+        echo "$TOP_LEVEL_ISSUES"
         # Log the contents of the JSON file before parsing
         echo "Contents of parent_child_links.json before processing:"
         cat parent_child_links.json
