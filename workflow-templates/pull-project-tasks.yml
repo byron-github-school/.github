@@ -44,9 +44,15 @@ jobs:
           local issue_number=$1
           local parent_number=$2
 
+          echo "Processing issue #$issue_number"
+
           # Fetch sub-issues for the current issue
           SUBISSUES=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
             "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues/$issue_number/sub-issues" | jq -c '.[]')
+
+          # Log sub-issues to the action log
+          echo "Sub-issues for issue #$issue_number:"
+          echo "$SUBISSUES" | jq -r '.number'
 
           # Add the current issue to the hierarchy if not already present
           if ! jq -e --arg issue "$issue_number" 'has($issue)' parent_child_links.json > /dev/null; then
@@ -58,6 +64,8 @@ jobs:
           for subissue in $SUBISSUES; do
             SUBISSUE_NUMBER=$(echo $subissue | jq -r '.number')
             SUBISSUE_URL=$(echo $subissue | jq -r '.html_url')
+
+            echo "Linking sub-issue #$SUBISSUE_NUMBER to parent issue #$issue_number"
 
             # Add the sub-issue to the parent
             jq --arg parent "$issue_number" --arg child "[$SUBISSUE_NUMBER, \"$SUBISSUE_URL\"]" \
@@ -72,6 +80,9 @@ jobs:
         # Fetch all top-level issues
         TOP_LEVEL_ISSUES=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
           "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues?state=open" | jq -c '.[]')
+
+        echo "Top-level issues:"
+        echo "$TOP_LEVEL_ISSUES" | jq -r '.number'
 
         # Process each top-level issue
         for issue in $TOP_LEVEL_ISSUES; do
@@ -104,6 +115,7 @@ jobs:
 
         # Add all issues to the project
         for parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
+          echo "Adding issue #$parent to the project"
           curl -s -X POST \
             -H "Authorization: token $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.inertia-preview+json" \
@@ -117,6 +129,7 @@ jobs:
         for parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
           for child in $(jq -c --arg parent "$parent" '.[$parent][]' parent_child_links.json); do
             CHILD_NUMBER=$(echo $child | jq -r '.[0]')
+            echo "Linking child issue #$CHILD_NUMBER to parent issue #$parent"
             curl -s -X POST \
               -H "Authorization: token $GITHUB_TOKEN" \
               -H "Accept: application/vnd.github.v3+json" \
@@ -132,6 +145,7 @@ jobs:
       run: |
         for parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
           CHILD_LINKS=$(jq -r --arg parent "$parent" '.[$parent][] | "- [Issue #\(.[])](\(.[]))"' parent_child_links.json | tr '\n' '\n')
+          echo "Updating parent issue #$parent with child links"
           curl -s -X PATCH \
             -H "Authorization: token $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
@@ -140,4 +154,3 @@ jobs:
           echo "Parent Issue #$parent updated with child links."
         done
         echo "All parent issues updated with child links."
-        
