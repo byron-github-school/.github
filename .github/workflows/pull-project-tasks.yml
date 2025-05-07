@@ -103,12 +103,30 @@ jobs:
           cat parent_child_links.json
         }
         # Fetch all top-level issues
-        TOP_LEVEL_ISSUES=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-          "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues?state=open" | jq -c '.[]')
+        TOP_LEVEL_ISSUES=$(mktemp)
+        PAGE=1
+        PER_PAGE=100
+
+        echo "[]" > "$TOP_LEVEL_ISSUES"
+
+        while : ; do
+          RESPONSE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues?state=open&per_page=$PER_PAGE&page=$PAGE")
+
+          # Check if response is empty or an empty array
+          if [ "$(echo "$RESPONSE" | jq '. | length')" -eq 0 ]; then
+            break
+          fi
+
+          # Append current page results to TOP_LEVEL_ISSUES
+          jq -s '.[0] + .[1]' "$TOP_LEVEL_ISSUES" <(echo "$RESPONSE") > "${TOP_LEVEL_ISSUES}.tmp" && mv "${TOP_LEVEL_ISSUES}.tmp" "$TOP_LEVEL_ISSUES"
+
+          PAGE=$((PAGE + 1))
+        done
 
         echo "Top-level issues:"
-        echo "$TOP_LEVEL_ISSUES" | jq -r '.number'
-        echo "$TOP_LEVEL_ISSUES"
+        jq -r '.[].number' "$TOP_LEVEL_ISSUES"
+
         # Log the contents of the JSON file before parsing
         echo "Contents of parent_child_links.json before processing:"
         cat parent_child_links.json
