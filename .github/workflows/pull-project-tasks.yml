@@ -84,6 +84,10 @@ jobs:
         echo "Top-level issues:"
         echo "$TOP_LEVEL_ISSUES" | jq -r '.number'
 
+        # Log the contents of the JSON file before parsing
+        echo "Contents of parent_child_links.json before processing:"
+        cat parent_child_links.json
+
         # Process each top-level issue
         for issue in $TOP_LEVEL_ISSUES; do
           ISSUE_NUMBER=$(echo $issue | jq -r '.number')
@@ -113,6 +117,10 @@ jobs:
 
         echo "Project ID: $PROJECT_ID"
 
+        # Log the contents of the JSON file before adding issues
+        echo "Contents of parent_child_links.json before adding issues to the project:"
+        cat parent_child_links.json
+
         # Add all issues to the project
         for parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
           echo "Adding issue #$parent to the project"
@@ -124,6 +132,10 @@ jobs:
             "https://api.github.com/projects/$PROJECT_ID/columns/1/cards"
           echo "Issue #$parent added to the project"
         done
+
+        # Log the contents of the JSON file before linking child issues
+        echo "Contents of parent_child_links.json before linking child issues:"
+        cat parent_child_links.json
 
         # Link child issues to their parents
         for parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
@@ -143,6 +155,10 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets[inputs.pat_secret] }}
       run: |
+        # Log the contents of the JSON file before updating parent issues
+        echo "Contents of parent_child_links.json before updating parent issues:"
+        cat parent_child_links.json
+
         for parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
           CHILD_LINKS=$(jq -r --arg parent "$parent" '.[$parent][] | "- [Issue #\(.[])](\(.[]))"' parent_child_links.json | tr '\n' '\n')
           echo "Updating parent issue #$parent with child links"
