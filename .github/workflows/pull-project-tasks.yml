@@ -73,19 +73,19 @@ jobs:
           fi
 
           # Link sub-issues to the current issue
-          for subissue in $SUBISSUES; do
-            SUBISSUE_NUMBER=$(echo $subissue | jq -r '.number')
-            SUBISSUE_URL=$(echo $subissue | jq -r '.html_url')
+        echo "$SUBISSUES" | jq -c '.' | while read -r subissue; do
+          SUBISSUE_NUMBER=$(echo "$subissue" | jq -r '.number')
+          SUBISSUE_URL=$(echo $subissue | jq -r '.html_url')
 
-            echo "Linking sub-issue #$SUBISSUE_NUMBER to parent issue #$issue_number"
+          echo "Linking sub-issue #$SUBISSUE_NUMBER to parent issue #$issue_number"
 
-            jq --arg parent "$issue_number" \
-              --arg number "$SUBISSUE_NUMBER" \
-              --arg url "$SUBISSUE_URL" \
-              '.[$parent] += [{"number": $number, "url": $url}]' \
-              parent_child_links.json > temp.json \
-            && mv temp.json parent_child_links.json
-          done
+          jq --arg parent "$issue_number" \
+            --arg number "$SUBISSUE_NUMBER" \
+            --arg url "$SUBISSUE_URL" \
+            '.[$parent] += [{"number": $number, "url": $url}]' \
+            parent_child_links.json > temp.json \
+          && mv temp.json parent_child_links.json
+        done
 
           echo "Contents of parent_child_links.json after processing issue #$issue_number:"
           cat parent_child_links.json
@@ -102,7 +102,7 @@ jobs:
         cat parent_child_links.json
 
         # Process each top-level issue
-        echo "$TOP_LEVEL_ISSUES" | while read -r issue; do
+        echo "$TOP_LEVEL_ISSUES" | jq -c '.' | while read -r issue; do
           ISSUE_NUMBER=$(echo "$issue" | jq -r '.number')
           echo "Processing top-level issue #$ISSUE_NUMBER"
           fetch_subissues "$ISSUE_NUMBER"
