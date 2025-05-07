@@ -3,6 +3,10 @@ name: pull-project-tasks
 on:
   workflow_dispatch: # Allows manual triggering of the workflow
     inputs:
+      org_name:
+        description: 'The name of the GitHub Organization containing the project'
+        required: true
+        default: ''
       project_name:
         description: 'The name of the GitHub Project to update'
         required: true
@@ -148,10 +152,16 @@ jobs:
         PROJECT_NAME="${{ inputs.project_name }}"
         
         # Fetch the Project ID
+        echo "fetch the project ID"
+        ORG_NAME="${{ inputs.org_name }}"
+        PROJECT_NAME="${{ inputs.project_name }}"
+
+        echo "Fetching project ID for project '$PROJECT_NAME' in organization '$ORG_NAME'"
+
         PROJECT_ID=$(curl -s \
           -H "Authorization: token $GITHUB_TOKEN" \
           -H "Accept: application/vnd.github.inertia-preview+json" \
-          "https://api.github.com/orgs/im-infomagnus/projects" | \
+          "https://api.github.com/orgs/$ORG_NAME/projects" | \
           jq -r ".[] | select(.name==\"$PROJECT_NAME\") | .id")
 
         if [ -z "$PROJECT_ID" ]; then
