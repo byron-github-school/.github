@@ -102,9 +102,8 @@ jobs:
         cat parent_child_links.json
 
         # Process each top-level issue
-        for issue in $TOP_LEVEL_ISSUES; do
-          echo "Processing issue #$issue"
-          ISSUE_NUMBER=$(echo $issue | jq -r '.number')
+        echo "$TOP_LEVEL_ISSUES" | while read -r issue; do
+          ISSUE_NUMBER=$(echo "$issue" | jq -r '.number')
           echo "Processing top-level issue #$ISSUE_NUMBER"
           fetch_subissues "$ISSUE_NUMBER"
         done
