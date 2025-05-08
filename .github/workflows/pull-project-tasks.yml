@@ -112,6 +112,9 @@ jobs:
           echo "Contents of parent_child_links.json after processing issue #$issue_number:"
           cat parent_child_links.json
         }
+        #end function
+
+
         # Fetch all top-level issues
         TOP_LEVEL_ISSUES=$(mktemp)
         PAGE=1
@@ -142,7 +145,7 @@ jobs:
         cat parent_child_links.json
 
         # Process each top-level issue
-        echo "$TOP_LEVEL_ISSUES" | jq -c '.' | while read -r issue; do
+        echo "$TOP_LEVEL_ISSUES" | jq -c '.[]' | while read -r issue; do
           ISSUE_NUMBER=$(echo "$issue" | jq -r '.number')
           echo "Processing top-level issue #$ISSUE_NUMBER"
           fetch_subissues "$ISSUE_NUMBER"
