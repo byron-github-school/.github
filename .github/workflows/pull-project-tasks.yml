@@ -149,6 +149,8 @@ jobs:
         done
 
         echo "Full parent-child hierarchy constructed and saved to parent_child_links.json."
+        echo "Contents of parent_child_links.json after processing all issues:"
+        cat parent_child_links.json
 
     - name: Add Issues to GitHub Project and Maintain Relationships
       id: add_issues
