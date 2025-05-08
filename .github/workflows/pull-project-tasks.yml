@@ -158,18 +158,38 @@ jobs:
 
         echo "Fetching project ID for project '$PROJECT_NAME' in organization '$ORG_NAME'"
 
-        PROJECT_ID=$(curl -s \
-          -H "Authorization: token $GITHUB_TOKEN" \
-          -H "Accept: application/vnd.github.inertia-preview+json" \
-          "https://api.github.com/orgs/$ORG_NAME/projects" | \
-          jq -r ".[] | select(.name==\"$PROJECT_NAME\") | .id")
+        # Fetch the Project ID
+        PROJECT_RESPONSE=$(curl -s -H "Authorization: bearer $GITHUB_TOKEN" \
+          -X POST -d @- https://api.github.com/graphql << EOF
+        {
+          "query": "query(\$org: String!, \$projectName: String!) {
+            organization(login: \"${ORG_NAME}\") {
+              projectsV2(first: 100, query: \"${PROJECT_NAME}\") {
+                nodes {
+                  id
+                  title
+                }
+              }
+            }
+          }"
+        )
 
-        if [ -z "$PROJECT_ID" ]; then
-          echo "Error: Project with name '$PROJECT_NAME' not found."
+        # Validate JSON parsing
+        if ! echo "$PROJECT_RESPONSE" | jq empty; then
+          echo "Error: Failed to parse GraphQL response:"
+          echo "$PROJECT_RESPONSE"
           exit 1
         fi
 
-        echo "Project ID: $PROJECT_ID"
+        # Extract Project ID
+        PROJECT_ID=$(echo "$PROJECT_RESPONSE" | jq -r ".data.organization.projectsV2.nodes[] | select(.title==\"$PROJECT_NAME\") | .id")
+
+        if [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" == "null" ]; then
+          echo "Error: Project '$PROJECT_NAME' not found in organization '$ORG_NAME'."
+          exit 1
+        fi
+
+        echo "Project ID found: $PROJECT_ID"
 
         # Log the contents of the JSON file before adding issues
         echo "Contents of parent_child_links.json before adding issues to the project:"
