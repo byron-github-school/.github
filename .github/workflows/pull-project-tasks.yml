@@ -183,7 +183,11 @@ jobs:
         }
         EOF
         )
-
+        
+        # Log the raw response for debugging
+        echo "Raw response from GraphQL API:"
+        echo "$PROJECT_RESPONSE"
+        
         # Validate JSON parsing
         if ! echo "$PROJECT_RESPONSE" | jq empty; then
           echo "Error: Failed to parse GraphQL response:"
