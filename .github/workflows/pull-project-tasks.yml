@@ -163,7 +163,26 @@ jobs:
 
         # Process each top-level issue
         echo "$TOP_LEVEL_ISSUES" | jq -c '.[]' | while read -r issue; do
+          # Check if $issue is empty or null
+          if [ -z "$issue" ] || [ "$issue" == "null" ]; then
+            echo "Warning: Skipping empty or null issue."
+            continue
+          fi
+
+          # Check if $issue is valid JSON
+          if ! echo "$issue" | jq empty > /dev/null; then
+            echo "Warning: Invalid JSON for issue: $issue"
+            continue
+          fi
+
           ISSUE_NUMBER=$(echo "$issue" | jq -r '.number')
+
+          # Check if ISSUE_NUMBER is empty
+          if [ -z "$ISSUE_NUMBER" ]; then
+            echo "Warning: Issue number is empty for issue: $issue"
+            continue
+          fi
+
           echo "Processing top-level issue #$ISSUE_NUMBER"
           fetch_subissues "$ISSUE_NUMBER"
         done
