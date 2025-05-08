@@ -143,7 +143,11 @@ jobs:
         # Log the contents of the JSON file before parsing
         echo "Contents of parent_child_links.json before processing:"
         cat parent_child_links.json
-
+        
+        #raw response for top-level issues
+        echo "Raw response for top-level issues:"
+        cat "$TOP_LEVEL_ISSUES"
+        
         # Process each top-level issue
         echo "$TOP_LEVEL_ISSUES" | jq -c '.[]' | while read -r issue; do
           ISSUE_NUMBER=$(echo "$issue" | jq -r '.number')
