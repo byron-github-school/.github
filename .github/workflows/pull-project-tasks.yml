@@ -171,23 +171,26 @@ jobs:
           -X POST -d @- https://api.github.com/graphql <<EOF
         {
           "query": "query(\$org: String!, \$projectName: String!) {
-            organization(login: \"${ORG_NAME}\") {
-              projectsV2(first: 100, query: \"${PROJECT_NAME}\") {
+            organization(login: \$org) {
+              projectsV2(first: 100, query: \$projectName) {
                 nodes {
                   id
                   title
                 }
               }
             }
-          }"
+          }",
+          "variables": {
+            "org": "${ORG_NAME}",
+            "projectName": "${PROJECT_NAME}"
+          }
         }
         EOF
         )
-        
         # Log the raw response for debugging
         echo "Raw response from GraphQL API:"
         echo "$PROJECT_RESPONSE"
-        
+
         # Validate JSON parsing
         if ! echo "$PROJECT_RESPONSE" | jq empty; then
           echo "Error: Failed to parse GraphQL response:"
