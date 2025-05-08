@@ -41,7 +41,13 @@ jobs:
         GITHUB_TOKEN: ${{ secrets[inputs.pat_secret] }}
       run: |
         # Initialize parent-child relationships file
-        echo "{}" > parent_child_links.json
+          echo "{}" > parent_child_links.json
+
+          # Validate JSON after initialization
+          if ! jq empty parent_child_links.json; then
+              echo "Error: parent_child_links.json contains invalid JSON. Reinitializing..."
+              echo "{}" > parent_child_links.json
+          fi
 
         # Recursive function to fetch sub-issues and build hierarchy
         fetch_subissues() {
@@ -160,18 +166,20 @@ jobs:
 
         # Fetch the Project ID
         PROJECT_RESPONSE=$(curl -s -H "Authorization: bearer $GITHUB_TOKEN" \
-          -X POST -d @- https://api.github.com/graphql << EOF
-        {
-          "query": "query(\$org: String!, \$projectName: String!) {
-            organization(login: \"${ORG_NAME}\") {
-              projectsV2(first: 100, query: \"${PROJECT_NAME}\") {
-                nodes {
-                  id
-                  title
-                }
-              }
-            }
-          }"
+                          -X POST -d @- https://api.github.com/graphql <<EOF
+                          {
+                            "query": "query(\$org: String!, \$projectName: String!) {
+                            organization(login: \"${ORG_NAME}\") {
+                            projectsV2(first: 100, query: \"${PROJECT_NAME}\") {
+                              nodes {
+                                    id
+                                    title
+                          }
+                      }
+                  }
+              }"
+          }
+          EOF
         )
 
         # Validate JSON parsing
