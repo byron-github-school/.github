@@ -165,7 +165,7 @@ jobs:
         #cat "$TOP_LEVEL_ISSUES"
 
         # Process each top-level issue
-        jq -c '.' "$TOP_LEVEL_ISSUES" | while read -r issue; do
+        jq -c '.[]' "$TOP_LEVEL_ISSUES" | while read -r issue; do
           # Check if $issue is empty or null
           if [ -z "$issue" ] || [ "$issue" == "null" ]; then
             echo "Warning: Skipping empty or null issue."
