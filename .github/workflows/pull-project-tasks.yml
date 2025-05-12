@@ -154,6 +154,7 @@ jobs:
 
         echo "Top-level issues:"
         jq -r '.[].number' "$TOP_LEVEL_ISSUES"
+        echo "Total top-level issues found: $(jq '. | length' "$TOP_LEVEL_ISSUES")"
 
         # Log the contents of the JSON file before parsing
         echo "Contents of parent_child_links.json before processing:"
