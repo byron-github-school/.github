@@ -177,7 +177,7 @@ jobs:
             echo "Warning: Invalid JSON for issue: $issue"
             continue
           fi
-          echo "Issue: $issue" # Debugging statement
+          #echo "Issue: $issue" # Debugging statement
 
           # Check if the JSON object has a "number" field
           if echo "$issue" | jq -e 'has("number")' > /dev/null; then
