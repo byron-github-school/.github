@@ -41,13 +41,13 @@ jobs:
         GITHUB_TOKEN: ${{ secrets[inputs.pat_secret] }}
       run: |
         # Initialize parent-child relationships file
-          echo "{}" > parent_child_links.json
+        echo "{}" > parent_child_links.json
 
-          # Validate JSON after initialization
-          if ! jq empty parent_child_links.json; then
-              echo "Error: parent_child_links.json contains invalid JSON. Reinitializing..."
-              echo "{}" > parent_child_links.json
-          fi
+        # Validate JSON after initialization
+        if ! jq empty parent_child_links.json; then
+          echo "Error: parent_child_links.json contains invalid JSON. Reinitializing..."
+          echo "{}" > parent_child_links.json
+        fi
 
         # Recursive function to fetch sub-issues and build hierarchy
         fetch_subissues() {
@@ -56,31 +56,31 @@ jobs:
 
           echo "Processing issue #$issue_number"
 
-        # Fetch sub-issues for the current issue
-        curl -s -H "Authorization: token $GITHUB_TOKEN" \
-          "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues/$issue_number/sub-issues" > subissues_response.json
+          # Fetch sub-issues for the current issue
+          curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues/$issue_number/sub-issues" > subissues_response.json
 
-        echo "Raw response for sub-issues of issue #$issue_number:"
-        cat subissues_response.json
+          echo "Raw response for sub-issues of issue #$issue_number:"
+          cat subissues_response.json
 
-        # Check if response is empty first
-        if [ ! -s subissues_response.json ]; then
-          echo "No sub-issues found for issue #$issue_number (empty response)"
-          return
-        fi
+          # Check if response is empty first
+          if [ ! -s subissues_response.json ]; then
+            echo "No sub-issues found for issue #$issue_number (empty response)"
+            return
+          fi
 
-        # Check if response contains a 404 status
-        if jq -e '.status == "404"' subissues_response.json > /dev/null; then
-          echo "No sub-issues found for issue #$issue_number (404 status)"
-          return
-        fi
+          # Check if response contains a 404 status
+          if jq -e '.status == "404"' subissues_response.json > /dev/null; then
+            echo "No sub-issues found for issue #$issue_number (404 status)"
+            return
+          fi
 
-        SUBISSUES=$(jq -c '.[]' subissues_response.json)
+          SUBISSUES=$(jq -c '.[]' subissues_response.json)
 
-        if [ -z "$SUBISSUES" ] || [ "$SUBISSUES" == "[]" ]; then
-          echo "No sub-issues found for issue #$issue_number"
-          return
-        fi
+          if [ -z "$SUBISSUES" ] || [ "$SUBISSUES" == "[]" ]; then
+            echo "No sub-issues found for issue #$issue_number"
+            return
+          fi
 
           # Validate JSON before processing
           if ! jq empty parent_child_links.json; then
@@ -95,81 +95,76 @@ jobs:
           fi
 
           # Link sub-issues to the current issue
-        echo "$SUBISSUES" | jq -c '.' | while read -r subissue; do
-          SUBISSUE_NUMBER=$(echo "$subissue" | jq -r '.number')
-          SUBISSUE_URL=$(echo $subissue | jq -r '.html_url')
+          echo "$SUBISSUES" | jq -c '.' | while read -r subissue; do
+            SUBISSUE_NUMBER=$(echo "$subissue" | jq -r '.number')
+            SUBISSUE_URL=$(echo "$subissue" | jq -r '.html_url')
 
-          echo "Linking sub-issue #$SUBISSUE_NUMBER to parent issue #$issue_number"
+            echo "Linking sub-issue #$SUBISSUE_NUMBER to parent issue #$issue_number"
 
-          jq --arg parent "$issue_number" \
-            --arg number "$SUBISSUE_NUMBER" \
-            --arg url "$SUBISSUE_URL" \
-            '.[$parent] += [{"number": $number, "url": $url}]' \
-            parent_child_links.json > temp.json \
-          && mv temp.json parent_child_links.json
-        done
+            jq --arg parent "$issue_number" \
+              --arg number "$SUBISSUE_NUMBER" \
+              --arg url "$SUBISSUE_URL" \
+              '.[$parent] += [{"number": $number, "url": $url}]' \
+              parent_child_links.json > temp.json \
+            && mv temp.json parent_child_links.json
+          done
 
           echo "Contents of parent_child_links.json after processing issue #$issue_number:"
           cat parent_child_links.json
         }
         #end function
 
+        TOP_LEVEL_ISSUES=$(mktemp)
+        PAGE=1
+        PER_PAGE=100
 
-          TOP_LEVEL_ISSUES=$(mktemp)
-          PAGE=1
-          PER_PAGE=100
+        echo "[]" > "$TOP_LEVEL_ISSUES"
 
-          echo "[]" > "$TOP_LEVEL_ISSUES"
+        while : ; do
+          RESPONSE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues?state=open&per_page=$PER_PAGE&page=$PAGE")
 
-          while : ; do
-            RESPONSE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-              "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues?state=open&per_page=$PER_PAGE&page=$PAGE")
+          echo "Raw response for page $PAGE:"
+          echo "$RESPONSE"
 
-            echo "Raw response for page $PAGE:"
+          # Check if response is empty
+          if [ -z "$RESPONSE" ]; then
+            echo "Warning: Empty response from GitHub API. Assuming end of pages."
+            break
+          fi
+
+          # Check if response is valid JSON
+          if ! echo "$RESPONSE" | jq empty > /dev/null; then
+            echo "Warning: Invalid JSON response from GitHub API. Assuming end of pages. Response was:"
             echo "$RESPONSE"
-            # Check if response contains a 404 status
-            if echo "$RESPONSE" | jq -e '.status == "404"' > /dev/null; then
-              echo "Error: 404 status received from GitHub API. Stopping pagination."
-              break
-              
-             # Check if response is empty
-            if [ -z "$RESPONSE" ]; then
-              echo "Warning: Empty response from GitHub API. Assuming end of pages."
-              break
-            fi
+            break
+          fi
 
-            # Check if response is valid JSON
-            if ! echo "$RESPONSE" | jq empty > /dev/null; then
-              echo "Warning: Invalid JSON response from GitHub API. Assuming end of pages. Response was:"
-              echo "$RESPONSE"
-              break
-            fi
+          # Check if response is an empty array
+          if [ "$(echo "$RESPONSE" | jq '. | length')" -eq 0 ]; then
+            echo "No issues found on this page. Assuming end of pages."
+            break
+          fi
 
-            # Check if response is an empty array
-            if [ "$(echo "$RESPONSE" | jq '. | length')" -eq 0 ]; then
-              echo "No issues found on this page. Assuming end of pages."
-              break
-            fi
+          # Append current page results to TOP_LEVEL_ISSUES
+          jq -s '.[0] + .[1]' "$TOP_LEVEL_ISSUES" <(echo "$RESPONSE") > "${TOP_LEVEL_ISSUES}.tmp" && mv "${TOP_LEVEL_ISSUES}.tmp" "$TOP_LEVEL_ISSUES"
 
-            # Append current page results to TOP_LEVEL_ISSUES
-            jq -s '.[0] + .[1]' "$TOP_LEVEL_ISSUES" <(echo "$RESPONSE") > "${TOP_LEVEL_ISSUES}.tmp" && mv "${TOP_LEVEL_ISSUES}.tmp" "$TOP_LEVEL_ISSUES"
+          PAGE=$((PAGE + 1))
+        done
 
-            PAGE=$((PAGE + 1))
-          done
-
-          echo "Top-level issues:"
-          jq -r '.[].number' "$TOP_LEVEL_ISSUES"
+        echo "Top-level issues:"
+        jq -r '.[].number' "$TOP_LEVEL_ISSUES"
 
         # Log the contents of the JSON file before parsing
         echo "Contents of parent_child_links.json before processing:"
         cat parent_child_links.json
-        
+
         #raw response for top-level issues
         echo "Raw response for top-level issues:"
         cat "$TOP_LEVEL_ISSUES"
 
         # Process each top-level issue
-        echo "$TOP_LEVEL_ISSUES" | jq -c '.[]' | while read -r issue; do
+        echo "$TOP_LEVEL_ISSUES" | jq -c '.' | while read -r issue; do
           # Check if $issue is empty or null
           if [ -z "$issue" ] || [ "$issue" == "null" ]; then
             echo "Warning: Skipping empty or null issue."
@@ -264,8 +259,8 @@ jobs:
           curl -s -X POST \
             -H "Authorization: token $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.inertia-preview+json" \
-            -d "{\"content_id\": $(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-              "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues/$parent" | jq -r '.id'), \"content_type\": \"Issue\"}" \
+            -d "{\"content_id\": $(curl -s -H \"Authorization: token $GITHUB_TOKEN\" \
+              \"https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues/$parent\" | jq -r '.id'), \"content_type\": \"Issue\"}" \
             "https://api.github.com/projects/$PROJECT_ID/columns/1/cards"
           echo "Issue #$parent added to the project"
         done
@@ -277,7 +272,7 @@ jobs:
         # Link child issues to their parents
         for parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
           for child in $(jq -c --arg parent "$parent" '.[$parent][]' parent_child_links.json); do
-            CHILD_NUMBER=$(echo $child | jq -r '.[0]')
+            CHILD_NUMBER=$(echo "$child" | jq -r '.[0]')
             echo "Linking child issue #$CHILD_NUMBER to parent issue #$parent"
             curl -s -X POST \
               -H "Authorization: token $GITHUB_TOKEN" \
