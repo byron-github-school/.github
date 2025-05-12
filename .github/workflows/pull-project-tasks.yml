@@ -124,8 +124,8 @@ jobs:
           RESPONSE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
             "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues?state=open&per_page=$PER_PAGE&page=$PAGE")
 
-          echo "Raw response for page $PAGE:"
-          echo "$RESPONSE"
+          #echo "Raw response for page $PAGE:"
+          #echo "$RESPONSE"
 
           # Check if response is empty
           if [ -z "$RESPONSE" ]; then
