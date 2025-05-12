@@ -125,7 +125,14 @@ jobs:
             RESPONSE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
               "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues?state=open&per_page=$PER_PAGE&page=$PAGE")
 
-            # Check if response is empty
+            echo "Raw response for page $PAGE:"
+            echo "$RESPONSE"
+            # Check if response contains a 404 status
+            if echo "$RESPONSE" | jq -e '.status == "404"' > /dev/null; then
+              echo "Error: 404 status received from GitHub API. Stopping pagination."
+              break
+              
+             # Check if response is empty
             if [ -z "$RESPONSE" ]; then
               echo "Warning: Empty response from GitHub API. Assuming end of pages."
               break
