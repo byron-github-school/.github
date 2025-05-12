@@ -160,8 +160,8 @@ jobs:
         cat parent_child_links.json
 
         #raw response for top-level issues
-        echo "Raw response for top-level issues:"
-        cat "$TOP_LEVEL_ISSUES"
+        #echo "Raw response for top-level issues:"
+        #cat "$TOP_LEVEL_ISSUES"
 
         # Process each top-level issue
         jq -c '.' "$TOP_LEVEL_ISSUES" | while read -r issue; do
@@ -176,8 +176,16 @@ jobs:
             echo "Warning: Invalid JSON for issue: $issue"
             continue
           fi
+          echo "Issue: $issue" # Debugging statement
 
-          ISSUE_NUMBER=$(echo "$issue" | jq -r '.number')
+          # Check if the JSON object has a "number" field
+          if echo "$issue" | jq -e 'has("number")' > /dev/null; then
+            ISSUE_NUMBER=$(echo "$issue" | jq -r '.number')
+          else
+            echo "Warning: Issue does not have a 'number' field: $issue"
+            continue
+          fi
+
 
           # Check if ISSUE_NUMBER is empty
           if [ -z "$ISSUE_NUMBER" ]; then
