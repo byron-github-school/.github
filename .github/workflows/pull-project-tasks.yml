@@ -57,9 +57,31 @@ jobs:
           echo "Processing issue #$issue_number"
 
           # Fetch sub-issues for the current issue
-          echo "Executing gh api command: gh api \"/repos/im-infomagnus/ms-code-with-engineering-playbook/issues/$issue_number/sub-issues\""
-          gh api "/repos/im-infomagnus/ms-code-with-engineering-playbook/issues/$issue_number/sub-issues" > subissues_response.json
+          echo "Executing gh api graphql to fetch sub-issues for issue #$issue_number"
+                    
+          QUERY=$(cat <<EOF
+              query {
+                node(id: "$issue_number") {
+                  ... on Issue {
+                    id
+                    number
+                    subIssueCount
+                    subissues(first: 100) {
+                      nodes {
+                        id
+                        number
+                        title
+                        url
+                      }
+                    }
+                  }
+                }
+              }
+            EOF
+          )
 
+          gh api graphql --paginate -q "data.node.subissues.nodes" -f query="$QUERY" > subissues_response.json
+          
           # echo "Raw response for sub-issues of issue #$issue_number:"
           # cat subissues_response.json
 
