@@ -78,7 +78,7 @@ jobs:
                           }
                         }
                       }
-          END_QUERY
+          'END_QUERY'
           )
 
           gh api graphql --paginate -q "data.node.subissues.nodes" -f query="$QUERY" > subissues_response.json
