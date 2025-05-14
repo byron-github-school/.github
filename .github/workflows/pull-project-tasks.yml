@@ -57,55 +57,55 @@ jobs:
           echo "Processing issue #$issue_number"
 
           # Fetch sub-issues for the current issue
-          echo "Executing gh api graphql to fetch sub-issues for issue #$issue_number"
+          # echo "Executing gh api graphql to fetch sub-issues for issue #$issue_number"
                     
-          # Fetch the Global ID
-          GET_ISSUE_ID_QUERY=$(cat <<'END_QUERY'
-          query($owner: String!, $repo: String!, $issue_number: Int!) {
-            repository(owner: $owner, name: $repo) {
-              issue(number: $issue_number) {
-                id
-              }
-            }
-          }
-          'END_QUERY'
-          )
+          # # Fetch the Global ID
+          # GET_ISSUE_ID_QUERY=$(cat <<'END_QUERY'
+          # query($owner: String!, $repo: String!, $issue_number: Int!) {
+          #   repository(owner: $owner, name: $repo) {
+          #     issue(number: $issue_number) {
+          #       id
+          #     }
+          #   }
+          # }
+          # 'END_QUERY'
+          # )
 
-          ISSUE_ID_RESPONSE=$(gh api graphql \
-            -f query="$GET_ISSUE_ID_QUERY" \
-            -f owner="im-infomagnus" \
-            -f repo="ms-code-with-engineering-playbook" \
-            -f issue_number="$issue_number")
+          # ISSUE_ID_RESPONSE=$(gh api graphql \
+          #   -f query="$GET_ISSUE_ID_QUERY" \
+          #   -f owner="im-infomagnus" \
+          #   -f repo="ms-code-with-engineering-playbook" \
+          #   -f issue_number="$issue_number")
 
-          ISSUE_ID=$(echo "$ISSUE_ID_RESPONSE" | jq -r '.data.repository.issue.id')
+          # ISSUE_ID=$(echo "$ISSUE_ID_RESPONSE" | jq -r '.data.repository.issue.id')
 
-          echo "Issue ID: $ISSUE_ID"
+          # echo "Issue ID: $ISSUE_ID"
 
-          # Fetch sub-issues for the current issue
-          echo "Executing gh api graphql to fetch sub-issues for issue #$issue_number"
+          # # Fetch sub-issues for the current issue
+          # echo "Executing gh api graphql to fetch sub-issues for issue #$issue_number"
 
-          QUERY=$(cat <<'END_QUERY'
-          query($issue_id: String!) {
-            node(id: "$issue_id") {
-              ... on Issue {
-                id
-                number
-                subIssueCount
-                subissues(first: 100) {
-                  nodes {
-                    id
-                    number
-                    title
-                    url
-                  }
-                }
-              }
-            }
-          }
-          'END_QUERY'
-          )
+          # QUERY=$(cat <<'END_QUERY'
+          # query($issue_id: String!) {
+          #   node(id: "$issue_id") {
+          #     ... on Issue {
+          #       id
+          #       number
+          #       subIssueCount
+          #       subissues(first: 100) {
+          #         nodes {
+          #           id
+          #           number
+          #           title
+          #           url
+          #         }
+          #       }
+          #     }
+          #   }
+          # }
+          # 'END_QUERY'
+          # )
 
-          gh api graphql --paginate -q "data.node.subissues.nodes" -f query="$QUERY" -f issue_id="$ISSUE_ID" > subissues_response.json
+          # gh api graphql --paginate -q "data.node.subissues.nodes" -f query="$QUERY" -f issue_id="$ISSUE_ID" > subissues_response.json
           
           # echo "Raw response for sub-issues of issue #$issue_number:"
           # cat subissues_response.json
