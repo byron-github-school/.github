@@ -71,7 +71,7 @@ jobs:
           fi
 
           # Create integer variables JSON with proper type using jq
-          VARIABLES=$(jq -n \
+          VARIABLES=$(jq -n -c \
             --arg owner "im-infomagnus" \
             --arg repo "ms-code-with-engineering-playbook" \
             --argjson issue_number "$issue_number" \
