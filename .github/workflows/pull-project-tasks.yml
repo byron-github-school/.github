@@ -54,6 +54,7 @@ jobs:
           local issue_number=$1
           local parent_number=$2
 
+          set +e  # Disable immediate exit on error
           echo "Processing issue #$issue_number"
 
           # Fetch sub-issues for the current issue
@@ -62,7 +63,7 @@ jobs:
           # Fetch the Global ID
           GET_ISSUE_ID_QUERY="query(\$owner: String!, \$repo: String!, \$issue_number: Int!) { repository(owner: \$owner, name: \$repo) { issue(number: \$issue_number) { id } } }"
           echo "GraphQL query to fetch issue ID: $GET_ISSUE_ID_QUERY"
-          
+
           # Create a temporary file to capture error output
           ERROR_OUTPUT=$(mktemp)
 
