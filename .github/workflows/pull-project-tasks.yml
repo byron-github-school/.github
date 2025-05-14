@@ -59,7 +59,6 @@ jobs:
           # Fetch sub-issues for the current issue
           echo "Executing gh api graphql to fetch sub-issues for issue #$issue_number"
                     
-          # Fetch the Global ID
           GET_ISSUE_ID_QUERY=$(cat <<'END_QUERY'
           query($owner: String!, $repo: String!, $issue_number: Int!) {
             repository(owner: $owner, name: $repo) {
@@ -68,7 +67,7 @@ jobs:
               }
             }
           }
-          'END_QUERY'
+          END_QUERY
           )
 
           ISSUE_ID_RESPONSE=$(gh api graphql \
