@@ -61,7 +61,8 @@ jobs:
                     
           # Fetch the Global ID
           GET_ISSUE_ID_QUERY="query(\$owner: String!, \$repo: String!, \$issue_number: Int!) { repository(owner: \$owner, name: \$repo) { issue(number: \$issue_number) { id } } }"
-
+          echo "GraphQL query to fetch issue ID: $GET_ISSUE_ID_QUERY"
+          
           # Create a temporary file to capture error output
           ERROR_OUTPUT=$(mktemp)
 
@@ -76,7 +77,7 @@ jobs:
             return 1
           fi
           echo "GraphQL query executed successfully."
-          
+
           ISSUE_ID=$(echo "$ISSUE_ID_RESPONSE" | jq -r '.data.repository.issue.id')
 
           echo "Issue ID: $ISSUE_ID"
