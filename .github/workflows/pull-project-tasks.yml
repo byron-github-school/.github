@@ -67,7 +67,9 @@ jobs:
             -f owner="im-infomagnus" \
             -f repo="ms-code-with-engineering-playbook" \
             -f issue_number="$issue_number")
-
+          echo "Raw response for issue ID response:"
+          echo "$ISSUE_ID_RESPONSE"
+          
           ISSUE_ID=$(echo "$ISSUE_ID_RESPONSE" | jq -r '.data.repository.issue.id')
 
           echo "Issue ID: $ISSUE_ID"
