@@ -244,7 +244,7 @@ jobs:
           fi
 
           echo "Processing top-level issue #$ISSUE_NUMBER"
-          #fetch_subissues "$ISSUE_NUMBER"
+          fetch_subissues "$ISSUE_NUMBER"
         done
 
         echo "Full parent-child hierarchy constructed and saved to parent_child_links.json."
