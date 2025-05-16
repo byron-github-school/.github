@@ -106,29 +106,9 @@ jobs:
           # # Fetch sub-issues for the current issue
           echo "Executing gh api graphql to fetch sub-issues for issue #$issue_number"
 
-          QUERY=$(cat <<'END_QUERY'
-          query($issue_id: String!) {
-            node(id: "$issue_id") {
-              ... on Issue {
-                id
-                number
-                subIssueCount
-                subissues(first: 100) {
-                  nodes {
-                    id
-                    number
-                    title
-                    url
-                  }
-                }
-              }
-            }
-          }
-          'END_QUERY'
-          )
+          QUERY="query(\$issue_id: ID!) { node(id: \$issue_id) { ... on Issue { id number subIssueCount subIssues(first: 100) { nodes { id number title url } } } } }"
 
-          gh api graphql --paginate -q "data.node.subissues.nodes" -f query="$QUERY" -f issue_id="$ISSUE_ID" > subissues_response.json
-          
+          gh api graphql --paginate -q "data.node.subIssues.nodes" -f query="$QUERY" -f issue_id="$ISSUE_ID" > subissues_response.json
           echo "Raw response for sub-issues of issue #$issue_number:"
           cat subissues_response.json
 
