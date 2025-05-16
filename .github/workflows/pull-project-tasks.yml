@@ -104,33 +104,33 @@ jobs:
           echo "Issue ID: $ISSUE_ID"
 
           # # Fetch sub-issues for the current issue
-          # echo "Executing gh api graphql to fetch sub-issues for issue #$issue_number"
+          echo "Executing gh api graphql to fetch sub-issues for issue #$issue_number"
 
-          # QUERY=$(cat <<'END_QUERY'
-          # query($issue_id: String!) {
-          #   node(id: "$issue_id") {
-          #     ... on Issue {
-          #       id
-          #       number
-          #       subIssueCount
-          #       subissues(first: 100) {
-          #         nodes {
-          #           id
-          #           number
-          #           title
-          #           url
-          #         }
-          #       }
-          #     }
-          #   }
-          # }
-          # 'END_QUERY'
-          # )
+          QUERY=$(cat <<'END_QUERY'
+          query($issue_id: String!) {
+            node(id: "$issue_id") {
+              ... on Issue {
+                id
+                number
+                subIssueCount
+                subissues(first: 100) {
+                  nodes {
+                    id
+                    number
+                    title
+                    url
+                  }
+                }
+              }
+            }
+          }
+          'END_QUERY'
+          )
 
-          # gh api graphql --paginate -q "data.node.subissues.nodes" -f query="$QUERY" -f issue_id="$ISSUE_ID" > subissues_response.json
+          gh api graphql --paginate -q "data.node.subissues.nodes" -f query="$QUERY" -f issue_id="$ISSUE_ID" > subissues_response.json
           
-          # echo "Raw response for sub-issues of issue #$issue_number:"
-          # cat subissues_response.json
+          echo "Raw response for sub-issues of issue #$issue_number:"
+          cat subissues_response.json
 
           # # Check if response is empty first
           # if [ ! -s subissues_response.json ]; then
