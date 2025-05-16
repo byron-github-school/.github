@@ -61,7 +61,7 @@ jobs:
           echo "Executing gh api graphql to fetch sub-issues for issue #$issue_number"
                     
           # Fetch the Global ID
-          GET_ISSUE_ID_QUERY="query(\$owner: String!, \$repo: String!, \$issue_number: Int!) { repository(owner: \$owner, name: \$repo) { issue(number: \$issue_number) { id } } }"
+          GET_ISSUE_ID_QUERY="query GetIssueId(\$owner: String!, \$repo: String!, \$issue_number: Int!) { repository(owner: \$owner, name: \$repo) { issue(number: \$issue_number) { id } } }"
           echo "GraphQL query to fetch issue ID: $GET_ISSUE_ID_QUERY"
 
           # Validate that issue_number is a valid integer
@@ -70,22 +70,15 @@ jobs:
             return 1
           fi
 
-          # Create integer variables JSON with proper type using jq
-          VARIABLES=$(jq -n -c \
-            --arg owner "im-infomagnus" \
-            --arg repo "ms-code-with-engineering-playbook" \
-            --argjson issue_number "$issue_number" \
-            '{owner: $owner, repo: $repo, issue_number: $issue_number}')
-
-          echo "Using variables: $VARIABLES"
-
           # Create a temporary file to capture error output
           ERROR_OUTPUT=$(mktemp)
 
-          # Execute the GraphQL query with error handling using variables JSON
+          # Use individual variables approach instead of a variables JSON object
           if ! ISSUE_ID_RESPONSE=$(gh api graphql \
             -f query="$GET_ISSUE_ID_QUERY" \
-            -f variables="$VARIABLES" 2>$ERROR_OUTPUT); then
+            -f owner="im-infomagnus" \
+            -f repo="ms-code-with-engineering-playbook" \
+            -f issue_number="$issue_number" 2>$ERROR_OUTPUT); then
             
             echo "Error executing GraphQL query: $(cat $ERROR_OUTPUT)"
             return 1
