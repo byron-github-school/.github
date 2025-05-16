@@ -59,7 +59,7 @@ jobs:
 
           # Fetch sub-issues for the current issue
           echo "Executing gh api graphql to fetch sub-issues for issue #$issue_number"
-                    
+                              
           # Fetch the Global ID
           GET_ISSUE_ID_QUERY="query GetIssueId(\$owner: String!, \$repo: String!, \$issue_number: Int!) { repository(owner: \$owner, name: \$repo) { issue(number: \$issue_number) { id } } }"
           echo "GraphQL query to fetch issue ID: $GET_ISSUE_ID_QUERY"
@@ -73,18 +73,31 @@ jobs:
           # Create a temporary file to capture error output
           ERROR_OUTPUT=$(mktemp)
 
-          # Use individual variables approach instead of a variables JSON object
-          if ! ISSUE_ID_RESPONSE=$(gh api graphql \
-            -f query="$GET_ISSUE_ID_QUERY" \
-            -f owner="im-infomagnus" \
-            -f repo="ms-code-with-engineering-playbook" \
-            -f issue_number="$issue_number" 2>$ERROR_OUTPUT); then
-            
+          # Convert issue_number to a clean integer
+          issue_number_int=$((10#$issue_number))  # Force base-10 interpretation
+          echo "Using integer value for issue_number: $issue_number_int"
+
+          # Use alternative approach with direct curl to control JSON types properly
+          ISSUE_ID_RESPONSE=$(curl -s -H "Authorization: bearer $GITHUB_TOKEN" \
+            -X POST \
+            -d "{\"query\":\"query { repository(owner: \\\"im-infomagnus\\\", name: \\\"ms-code-with-engineering-playbook\\\") { issue(number: $issue_number_int) { id } } }\"}" \
+            https://api.github.com/graphql 2>$ERROR_OUTPUT)
+
+          # Check for curl errors
+          if [ $? -ne 0 ]; then
             echo "Error executing GraphQL query: $(cat $ERROR_OUTPUT)"
             return 1
           fi
 
+          # Check for GraphQL errors in the response
+          if echo "$ISSUE_ID_RESPONSE" | jq -e '.errors' >/dev/null 2>&1; then
+            echo "GraphQL query returned errors:"
+            echo "$ISSUE_ID_RESPONSE" | jq '.errors'
+            return 1
+          fi
+
           echo "GraphQL query executed successfully."
+          echo "Raw response: $ISSUE_ID_RESPONSE"
 
           ISSUE_ID=$(echo "$ISSUE_ID_RESPONSE" | jq -r '.data.repository.issue.id')
 
