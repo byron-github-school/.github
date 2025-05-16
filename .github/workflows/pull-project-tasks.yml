@@ -108,10 +108,32 @@ jobs:
 
           QUERY="query(\$issue_id: ID!) { node(id: \$issue_id) { ... on Issue { id number subIssues(first: 100) { nodes { id number title url } } } } }"
           echo "GraphQL query to fetch sub-issues: $QUERY"
-          
-          gh api graphql --paginate -q "data.node.subIssues.nodes" -f query="$QUERY" -f issue_id="$ISSUE_ID" > subissues_response.json
+
+          # Execute GraphQL query without filtering the response
+          gh api graphql -f query="$QUERY" -f issue_id="$ISSUE_ID" > subissues_response.json
+
+          # Check if the response contains any errors
+          if jq -e '.errors' subissues_response.json > /dev/null 2>&1; then
+            echo "GraphQL query returned errors:"
+            jq '.errors' subissues_response.json
+            return 1
+          fi
+
           echo "Raw response for sub-issues of issue #$issue_number:"
           cat subissues_response.json
+
+          # Extract sub-issues from the response if they exist
+          if jq -e '.data.node.subIssues.nodes' subissues_response.json > /dev/null 2>&1; then
+            SUBISSUES=$(jq -c '.data.node.subIssues.nodes[]' subissues_response.json)
+            if [ -z "$SUBISSUES" ]; then
+              echo "No sub-issues found for issue #$issue_number"
+            else
+              echo "Found sub-issues for issue #$issue_number:"
+              echo "$SUBISSUES" | jq -r '.number'
+            fi
+          else
+            echo "No sub-issues data found in response"
+          fi
 
           # # Check if response is empty first
           # if [ ! -s subissues_response.json ]; then
