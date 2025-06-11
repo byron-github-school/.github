@@ -106,8 +106,7 @@ jobs:
           # # Fetch sub-issues for the current issue
           echo "Executing gh api graphql to fetch sub-issues for issue #$issue_number"
 
-          #QUERY="query(\$issue_id: ID!) { node(id: \$issue_id) { ... on Issue { id number subIssues(first: 100) { nodes { id number title url } } } } }"
-          QUERY="query() { node(id: \"$ISSUE_ID\") { ... on Issue { id number subIssues(first: 100) { nodes { id number title url } } } } }"
+          QUERY="query(\$issue_id: ID!) { node(id: \$issue_id) { ... on Issue { id number subIssues(first: 100) { nodes { id number title url } } } } }"
           echo "GraphQL query to fetch sub-issues: $QUERY"
 
           # Execute GraphQL query without filtering the response
