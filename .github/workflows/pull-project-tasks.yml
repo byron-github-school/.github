@@ -103,36 +103,94 @@ jobs:
 
           echo "Issue ID: $ISSUE_ID"
 
-          # # Fetch sub-issues for the current issue
-          echo "Executing gh api graphql to fetch sub-issues for issue #$issue_number"
-
-          QUERY="query(\$issue_id: ID!) { node(id: \$issue_id) { ... on Issue { id number subIssues(first: 100) { nodes { id number title url } } } } }"
-          echo "GraphQL query to fetch sub-issues: $QUERY"
-
-          # Execute GraphQL query without filtering the response
-          gh api graphql -f query="$QUERY" -f issue_id="$ISSUE_ID" > subissues_response.json
-
-          # Check if the response contains any errors
-          if jq -e '.errors' subissues_response.json > /dev/null 2>&1; then
-            echo "GraphQL query returned errors:"
-            jq '.errors' subissues_response.json
-            return 1
-          fi
-
-          echo "Raw response for sub-issues of issue #$issue_number:"
-          cat subissues_response.json
-
-          # Extract sub-issues from the response if they exist
-          if jq -e '.data.node.subIssues.nodes' subissues_response.json > /dev/null 2>&1; then
-            SUBISSUES=$(jq -c '.data.node.subIssues.nodes[]' subissues_response.json)
-            if [ -z "$SUBISSUES" ]; then
-              echo "No sub-issues found for issue #$issue_number"
-            else
-              echo "Found sub-issues for issue #$issue_number:"
-              echo "$SUBISSUES" | jq -r '.number'
+          # Try multiple GraphQL queries to find sub-issues
+          echo "Executing GraphQL queries to fetch sub-issues for issue #$issue_number"
+          
+          # First try the original subIssues query
+          QUERY1="query(\$issue_id: ID!) { node(id: \$issue_id) { ... on Issue { id number subIssues(first: 100) { nodes { id number title url } } } } }"
+          echo "Trying subIssues field query: $QUERY1"
+          
+          set +e  # Don't exit on error
+          gh api graphql -f query="$QUERY1" -f issue_id="$ISSUE_ID" > subissues_response.json 2>/dev/null
+          QUERY1_SUCCESS=$?
+          set -e
+          
+          SUBISSUES=""
+          if [ $QUERY1_SUCCESS -eq 0 ] && ! jq -e '.errors' subissues_response.json > /dev/null 2>&1; then
+            echo "subIssues query successful"
+            if jq -e '.data.node.subIssues.nodes' subissues_response.json > /dev/null 2>&1; then
+              SUBISSUES=$(jq -c '.data.node.subIssues.nodes[]' subissues_response.json)
+              if [ -n "$SUBISSUES" ]; then
+                echo "Found sub-issues using subIssues field for issue #$issue_number:"
+                echo "$SUBISSUES" | jq -r '.number'
+              fi
             fi
           else
-            echo "No sub-issues data found in response"
+            echo "subIssues query failed or returned errors, trying alternative approach"
+          fi
+          
+          # If subIssues didn't work, try timeline items and body parsing
+          if [ -z "$SUBISSUES" ]; then
+            QUERY2="query(\$issue_id: ID!) { node(id: \$issue_id) { ... on Issue { id number body timelineItems(first: 100, itemTypes: [CROSS_REFERENCED_EVENT]) { nodes { ... on CrossReferencedEvent { source { ... on Issue { id number title url } } } } } } } }"
+            echo "Trying timeline items query: $QUERY2"
+            
+            gh api graphql -f query="$QUERY2" -f issue_id="$ISSUE_ID" > subissues_response.json
+            
+            # Check if the response contains any errors
+            if jq -e '.errors' subissues_response.json > /dev/null 2>&1; then
+              echo "GraphQL query returned errors:"
+              jq '.errors' subissues_response.json
+              return 1
+            fi
+
+            echo "Raw response for alternative query:"
+            cat subissues_response.json
+            
+            # Try cross-referenced issues from timeline
+            if jq -e '.data.node.timelineItems.nodes' subissues_response.json > /dev/null 2>&1; then
+              TIMELINE_ISSUES=$(jq -c '.data.node.timelineItems.nodes[] | select(.source.number != null) | .source' subissues_response.json)
+              if [ -n "$TIMELINE_ISSUES" ]; then
+                echo "Found cross-referenced issues for issue #$issue_number:"
+                echo "$TIMELINE_ISSUES" | jq -r '.number'
+                SUBISSUES="$TIMELINE_ISSUES"
+              fi
+            fi
+            
+            # If still no sub-issues, parse task list from body
+            if [ -z "$SUBISSUES" ]; then
+              ISSUE_BODY=$(jq -r '.data.node.body // ""' subissues_response.json)
+              if [[ "$ISSUE_BODY" =~ \#[0-9]+ ]]; then
+                echo "Found issue references in body, parsing task list..."
+                # Extract issue numbers from task list items (- [ ] or - [x] #123)
+                TASK_ISSUE_NUMBERS=$(echo "$ISSUE_BODY" | grep -oE -- '- \[[x ]\].*#[0-9]+' | grep -oE '#[0-9]+' | sed 's/#//' | sort -u)
+                if [ -n "$TASK_ISSUE_NUMBERS" ]; then
+                  echo "Found task list sub-issues: $TASK_ISSUE_NUMBERS"
+                  # Convert to JSON format for consistency
+                  SUBISSUES=""
+                  for task_issue_num in $TASK_ISSUE_NUMBERS; do
+                    # Create a JSON object for each task issue
+                    TASK_ISSUE_JSON="{\"number\": $task_issue_num, \"title\": \"Task issue #$task_issue_num\", \"url\": \"https://github.com/im-infomagnus/ms-code-with-engineering-playbook/issues/$task_issue_num\"}"
+                    if [ -z "$SUBISSUES" ]; then
+                      SUBISSUES="$TASK_ISSUE_JSON"
+                    else
+                      SUBISSUES="$SUBISSUES\n$TASK_ISSUE_JSON"
+                    fi
+                  done
+                fi
+              fi
+            fi
+          fi
+          
+          if [ -z "$SUBISSUES" ]; then
+            echo "No sub-issues found for issue #$issue_number using any method"
+          else
+            echo "Total sub-issues found for issue #$issue_number:"
+            if command -v wc >/dev/null 2>&1; then
+              SUBISSUE_COUNT=$(echo -e "$SUBISSUES" | wc -l)
+              echo "Count: $SUBISSUE_COUNT"
+            fi
+            echo "Sub-issue details:"
+            echo -e "$SUBISSUES" | jq -r '.number' 2>/dev/null || echo -e "$SUBISSUES"
           fi
 
           # # Check if response is empty first
