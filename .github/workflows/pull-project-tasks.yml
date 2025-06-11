@@ -404,7 +404,7 @@ jobs:
           
           # Get the issue ID using gh api
           ISSUE_ID=$(gh api "repos/im-infomagnus/ms-code-with-engineering-playbook/issues/$parent" | jq -r '.id')
-
+          echo "Issue ID: ${ISSUE_ID}"
           # Add the issue to the project using gh api
           gh api -X POST \
             -H "Accept: application/vnd.github.inertia-preview+json" \
