@@ -55,6 +55,7 @@ jobs:
           local parent_number=$2
 
           set +e  # Disable immediate exit on error
+          echo "---------------------------------------------------------------------------"
           echo "Processing issue #$issue_number"
 
           # Fetch sub-issues for the current issue
