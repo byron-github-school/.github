@@ -365,6 +365,8 @@ jobs:
           exit 1
         fi
         
+        echo "API response: ${API_RESPONSE}"
+
         PROJECT_ID=$(echo "$API_RESPONSE" | jq -r ".[] | select(.name==\"$PROJECT_NAME\") | .id")
 
         if [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" == "null" ]; then
