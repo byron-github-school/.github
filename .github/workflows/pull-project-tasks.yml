@@ -353,11 +353,19 @@ jobs:
         echo "Fetching project ID for project '$PROJECT_NAME' in organization '$ORG_NAME'"
 
         # Fetch the Project ID using v1 API
-        PROJECT_ID=$(curl -s \
+        API_RESPONSE=$(curl -s \
           -H "Authorization: token $GITHUB_TOKEN" \
           -H "Accept: application/vnd.github.inertia-preview+json" \
-          "https://api.github.com/orgs/$ORG_NAME/projects" | \
-          jq -r ".[] | select(.name==\"$PROJECT_NAME\") | .id")
+          "https://api.github.com/orgs/$ORG_NAME/projects")
+        
+        # Check if the API response is valid JSON
+        if ! echo "$API_RESPONSE" | jq empty > /dev/null 2>&1; then
+          echo "Error: Invalid JSON response from GitHub API:"
+          echo "$API_RESPONSE"
+          exit 1
+        fi
+        
+        PROJECT_ID=$(echo "$API_RESPONSE" | jq -r ".[] | select(.name==\"$PROJECT_NAME\") | .id")
 
         if [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" == "null" ]; then
           echo "Error: Project '$PROJECT_NAME' not found in organization '$ORG_NAME'."
