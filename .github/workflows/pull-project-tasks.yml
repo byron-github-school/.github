@@ -345,47 +345,19 @@ jobs:
       run: |
         PROJECT_NAME="${{ inputs.project_name }}"
         
-        # Fetch the Project ID
+        # Fetch the Project ID using v1 API
         echo "fetch the project ID"
         ORG_NAME="${{ inputs.org_name }}"
         PROJECT_NAME="${{ inputs.project_name }}"
 
         echo "Fetching project ID for project '$PROJECT_NAME' in organization '$ORG_NAME'"
 
-        # Fetch the Project ID
-        PROJECT_RESPONSE=$(curl -s -H "Authorization: bearer $GITHUB_TOKEN" \
-          -X POST -d @- https://api.github.com/graphql <<EOF
-        {
-          "query": "query(\$org: String!, \$projectName: String!) {
-            organization(login: \$org) {
-              projectsV2(first: 100, query: \$projectName) {
-                nodes {
-                  id
-                  title
-                }
-              }
-            }
-          }",
-          "variables": {
-            "org": "${ORG_NAME}",
-            "projectName": "${PROJECT_NAME}"
-          }
-        }
-        EOF
-        )
-        # Log the raw response for debugging
-        echo "Raw response from GraphQL API:"
-        echo "$PROJECT_RESPONSE"
-
-        # Validate JSON parsing
-        if ! echo "$PROJECT_RESPONSE" | jq empty; then
-          echo "Error: Failed to parse GraphQL response:"
-          echo "$PROJECT_RESPONSE"
-          exit 1
-        fi
-
-        # Extract Project ID
-        PROJECT_ID=$(echo "$PROJECT_RESPONSE" | jq -r ".data.organization.projectsV2.nodes[] | select(.title==\"$PROJECT_NAME\") | .id")
+        # Fetch the Project ID using v1 API
+        PROJECT_ID=$(curl -s \
+          -H "Authorization: token $GITHUB_TOKEN" \
+          -H "Accept: application/vnd.github.inertia-preview+json" \
+          "https://api.github.com/orgs/$ORG_NAME/projects" | \
+          jq -r ".[] | select(.name==\"$PROJECT_NAME\") | .id")
 
         if [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" == "null" ]; then
           echo "Error: Project '$PROJECT_NAME' not found in organization '$ORG_NAME'."
@@ -402,14 +374,16 @@ jobs:
         for parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
           echo "Adding issue #$parent to the project"
           
-          # Get the issue ID using gh api
-          ISSUE_ID=$(gh api "repos/im-infomagnus/ms-code-with-engineering-playbook/issues/$parent" | jq -r '.id')
+          # Get the issue ID using curl
+          ISSUE_ID=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues/$parent" | jq -r '.id')
           echo "Issue ID: ${ISSUE_ID}"
-          # Add the issue to the project using gh api
-          gh api -X POST \
+          # Add the issue to the project using curl
+          curl -s -X POST \
+            -H "Authorization: token $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.inertia-preview+json" \
-            "projects/$PROJECT_ID/columns/1/cards" \
-            -f content_id="$ISSUE_ID" -f content_type="Issue"
+            -d "{\"content_id\": $ISSUE_ID, \"content_type\": \"Issue\"}" \
+            "https://api.github.com/projects/$PROJECT_ID/columns/1/cards"
           
           echo "Issue #$parent added to the project"
         done
@@ -423,9 +397,11 @@ jobs:
           for child in $(jq -c --arg parent "$parent" '.[$parent][]' parent_child_links.json); do
             CHILD_NUMBER=$(echo "$child" | jq -r '.[0]')
             echo "Linking child issue #$CHILD_NUMBER to parent issue #$parent"
-            gh api -X POST \
-              "repos/im-infomagnus/ms-code-with-engineering-playbook/issues/$CHILD_NUMBER/comments" \
-              -f body="Child of: #$parent"
+            curl -s -X POST \
+              -H "Authorization: token $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              -d "{\"body\": \"Child of: #$parent\"}" \
+              "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues/$CHILD_NUMBER/comments"
             echo "Child Issue #$CHILD_NUMBER linked to Parent Issue #$parent"
           done
         done
@@ -441,9 +417,11 @@ jobs:
         for parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
           CHILD_LINKS=$(jq -r --arg parent "$parent" '.[$parent][] | "- [Issue #\(.[])](\(.[]))"' parent_child_links.json | tr '\n' '\n')
           echo "Updating parent issue #$parent with child links"
-          gh api -X PATCH \
-            "repos/im-infomagnus/ms-code-with-engineering-playbook/issues/$parent" \
-            -f body="# Linked Child Issues\n$CHILD_LINKS"
+          curl -s -X PATCH \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -d "{\"body\": \"# Linked Child Issues\n$CHILD_LINKS\"}" \
+            "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues/$parent"
           echo "Parent Issue #$parent updated with child links."
         done
         echo "All parent issues updated with child links."
