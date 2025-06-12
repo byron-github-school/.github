@@ -352,11 +352,19 @@ jobs:
 
         echo "Fetching project ID for project '$PROJECT_NAME' in organization '$ORG_NAME'"
 
-        # Fetch the Project ID using v1 API
-        API_RESPONSE=$(curl -s \
-          -H "Authorization: token $GITHUB_TOKEN" \
-          -H "Accept: application/vnd.github.inertia-preview+json" \
-          "https://api.github.com/orgs/$ORG_NAME/projects")
+        # Fetch the Project ID using GraphQL API for Projects v2
+        GRAPHQL_QUERY='query($org: String!) {
+          organization(login: $org) {
+            projectsV2(first: 100) {
+              nodes {
+                id
+                title
+              }
+            }
+          }
+        }'
+
+        API_RESPONSE=$(gh api graphql -f query="$GRAPHQL_QUERY" -f org="$ORG_NAME")
         
         # Check if the API response is valid JSON
         if ! echo "$API_RESPONSE" | jq empty > /dev/null 2>&1; then
@@ -367,7 +375,7 @@ jobs:
         
         echo "API response: ${API_RESPONSE}"
 
-        PROJECT_ID=$(echo "$API_RESPONSE" | jq -r ".[] | select(.name==\"$PROJECT_NAME\") | .id")
+        PROJECT_ID=$(echo "$API_RESPONSE" | jq -r ".data.organization.projectsV2.nodes[] | select(.title==\"$PROJECT_NAME\") | .id")
 
         if [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" == "null" ]; then
           echo "Error: Project '$PROJECT_NAME' not found in organization '$ORG_NAME'."
@@ -384,16 +392,30 @@ jobs:
         for parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
           echo "Adding issue #$parent to the project"
           
-          # Get the issue ID using curl
-          ISSUE_ID=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-            "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues/$parent" | jq -r '.id')
-          echo "Issue ID: ${ISSUE_ID}"
-          # Add the issue to the project using curl
-          curl -s -X POST \
-            -H "Authorization: token $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github.inertia-preview+json" \
-            -d "{\"content_id\": $ISSUE_ID, \"content_type\": \"Issue\"}" \
-            "https://api.github.com/projects/$PROJECT_ID/columns/1/cards"
+          # Get the issue ID using GraphQL (Global ID needed for Projects v2)
+          ISSUE_QUERY='query($owner: String!, $repo: String!, $issueNumber: Int!) {
+            repository(owner: $owner, name: $repo) {
+              issue(number: $issueNumber) {
+                id
+              }
+            }
+          }'
+          
+          ISSUE_RESPONSE=$(gh api graphql -f query="$ISSUE_QUERY" -f owner="im-infomagnus" -f repo="ms-code-with-engineering-playbook" -F issueNumber="$parent")
+          ISSUE_ID=$(echo "$ISSUE_RESPONSE" | jq -r '.data.repository.issue.id')
+          echo "Issue Global ID: ${ISSUE_ID}"
+          
+          # Add the issue to the project using GraphQL mutation for Projects v2
+          ADD_MUTATION='mutation($projectId: ID!, $contentId: ID!) {
+            addProjectV2ItemById(input: {projectId: $projectId, contentId: $contentId}) {
+              item {
+                id
+              }
+            }
+          }'
+          
+          ADD_RESPONSE=$(gh api graphql -f query="$ADD_MUTATION" -f projectId="$PROJECT_ID" -f contentId="$ISSUE_ID")
+          echo "Add response: $ADD_RESPONSE"
           
           echo "Issue #$parent added to the project"
         done
