@@ -3,9 +3,9 @@
     "description": "This is a custom workflow template. hello from the training class. Aug 11, 2099",
     "iconName": "test-template-icon",
     "categories": [
-        "javascript"
+       
     ],
     "filePatterns": [
-        "package.json$"
+        
     ]
 }
