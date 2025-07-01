@@ -40,6 +40,94 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets[inputs.pat_secret] }}
       run: |
+        # Rate limiting helper functions
+        check_rate_limit_rest() {
+          echo "Checking REST API rate limit..."
+          RATE_LIMIT_RESPONSE=$(gh api rate_limit)
+          REMAINING=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.rate.remaining')
+          RESET_TIME=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.rate.reset')
+          
+          echo "REST API requests remaining: $REMAINING"
+          
+          if [ "$REMAINING" -le 10 ]; then
+            CURRENT_TIME=$(date +%s)
+            SLEEP_TIME=$((RESET_TIME - CURRENT_TIME + 60))
+            if [ "$SLEEP_TIME" -gt 0 ]; then
+              echo "Rate limit nearly exceeded. Sleeping for $SLEEP_TIME seconds..."
+              sleep "$SLEEP_TIME"
+            fi
+          fi
+        }
+
+        check_rate_limit_graphql() {
+          echo "Checking GraphQL API rate limit..."
+          GRAPHQL_RATE_QUERY='query { rateLimit { remaining resetAt } }'
+          RATE_LIMIT_RESPONSE=$(gh api graphql -f query="$GRAPHQL_RATE_QUERY")
+          
+          if echo "$RATE_LIMIT_RESPONSE" | jq -e '.errors' >/dev/null 2>&1; then
+            echo "Warning: Could not check GraphQL rate limit"
+            return 0
+          fi
+          
+          REMAINING=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.data.rateLimit.remaining')
+          RESET_AT=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.data.rateLimit.resetAt')
+          
+          echo "GraphQL API points remaining: $REMAINING"
+          
+          if [ "$REMAINING" -le 100 ]; then
+            RESET_EPOCH=$(date -d "$RESET_AT" +%s 2>/dev/null || echo "0")
+            CURRENT_TIME=$(date +%s)
+            SLEEP_TIME=$((RESET_EPOCH - CURRENT_TIME + 60))
+            if [ "$SLEEP_TIME" -gt 0 ]; then
+              echo "GraphQL rate limit nearly exceeded. Sleeping for $SLEEP_TIME seconds..."
+              sleep "$SLEEP_TIME"
+            fi
+          fi
+        }
+
+        retry_with_backoff() {
+          local max_attempts=5
+          local delay=1
+          local attempt=1
+          local command="$*"
+          
+          while [ $attempt -le $max_attempts ]; do
+            echo "Attempt $attempt of $max_attempts: $command"
+            
+            if eval "$command"; then
+              return 0
+            fi
+            
+            local exit_code=$?
+            echo "Command failed with exit code $exit_code"
+            
+            if [ $attempt -eq $max_attempts ]; then
+              echo "Max attempts reached. Command failed."
+              return $exit_code
+            fi
+            
+            echo "Retrying in $delay seconds..."
+            sleep $delay
+            delay=$((delay * 2))
+            attempt=$((attempt + 1))
+          done
+        }
+
+        safe_gh_api() {
+          check_rate_limit_rest
+          retry_with_backoff gh api "$@"
+        }
+
+        safe_gh_graphql() {
+          check_rate_limit_graphql
+          retry_with_backoff gh api graphql "$@"
+        }
+
+        safe_curl() {
+          check_rate_limit_rest
+          retry_with_backoff curl "$@"
+        }
+
         # Initialize parent-child relationships file
         echo "{}" > parent_child_links.json
 
@@ -79,7 +167,7 @@ jobs:
           echo "Using integer value for issue_number: $issue_number_int"
 
           # Use alternative approach with direct curl to control JSON types properly
-          ISSUE_ID_RESPONSE=$(curl -s -H "Authorization: bearer $GITHUB_TOKEN" \
+          ISSUE_ID_RESPONSE=$(safe_curl -s -H "Authorization: bearer $GITHUB_TOKEN" \
             -X POST \
             -d "{\"query\":\"query { repository(owner: \\\"im-infomagnus\\\", name: \\\"ms-code-with-engineering-playbook\\\") { issue(number: $issue_number_int) { id } } }\"}" \
             https://api.github.com/graphql 2>$ERROR_OUTPUT)
@@ -112,7 +200,7 @@ jobs:
           echo "Trying subIssues field query: $QUERY1"
           
           set +e  # Don't exit on error
-          gh api graphql -f query="$QUERY1" -f issue_id="$ISSUE_ID" > subissues_response.json 2>/dev/null
+          safe_gh_graphql -f query="$QUERY1" -f issue_id="$ISSUE_ID" > subissues_response.json 2>/dev/null
           QUERY1_SUCCESS=$?
           set -e
           
@@ -135,7 +223,7 @@ jobs:
             QUERY2="query(\$issue_id: ID!) { node(id: \$issue_id) { ... on Issue { id number body timelineItems(first: 100, itemTypes: [CROSS_REFERENCED_EVENT]) { nodes { ... on CrossReferencedEvent { source { ... on Issue { id number title url } } } } } } } }"
             echo "Trying timeline items query: $QUERY2"
             
-            gh api graphql -f query="$QUERY2" -f issue_id="$ISSUE_ID" > subissues_response.json
+            safe_gh_graphql -f query="$QUERY2" -f issue_id="$ISSUE_ID" > subissues_response.json
             
             # Check if the response contains any errors
             if jq -e '.errors' subissues_response.json > /dev/null 2>&1; then
@@ -258,7 +346,7 @@ jobs:
 
         while : ; do
           echo "Executing gh api command: gh api \"/repos/im-infomagnus/ms-code-with-engineering-playbook/issues?state=open&per_page=$PER_PAGE&page=$PAGE\""
-          RESPONSE=$(gh api "repos/im-infomagnus/ms-code-with-engineering-playbook/issues?state=open&per_page=$PER_PAGE&page=$PAGE")
+          RESPONSE=$(safe_gh_api "repos/im-infomagnus/ms-code-with-engineering-playbook/issues?state=open&per_page=$PER_PAGE&page=$PAGE")
          
           #echo "Raw response for page $PAGE:"
           #echo "$RESPONSE"
@@ -343,6 +431,94 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets[inputs.pat_secret] }}
       run: |
+        # Rate limiting helper functions
+        check_rate_limit_rest() {
+          echo "Checking REST API rate limit..."
+          RATE_LIMIT_RESPONSE=$(gh api rate_limit)
+          REMAINING=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.rate.remaining')
+          RESET_TIME=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.rate.reset')
+          
+          echo "REST API requests remaining: $REMAINING"
+          
+          if [ "$REMAINING" -le 10 ]; then
+            CURRENT_TIME=$(date +%s)
+            SLEEP_TIME=$((RESET_TIME - CURRENT_TIME + 60))
+            if [ "$SLEEP_TIME" -gt 0 ]; then
+              echo "Rate limit nearly exceeded. Sleeping for $SLEEP_TIME seconds..."
+              sleep "$SLEEP_TIME"
+            fi
+          fi
+        }
+
+        check_rate_limit_graphql() {
+          echo "Checking GraphQL API rate limit..."
+          GRAPHQL_RATE_QUERY='query { rateLimit { remaining resetAt } }'
+          RATE_LIMIT_RESPONSE=$(gh api graphql -f query="$GRAPHQL_RATE_QUERY")
+          
+          if echo "$RATE_LIMIT_RESPONSE" | jq -e '.errors' >/dev/null 2>&1; then
+            echo "Warning: Could not check GraphQL rate limit"
+            return 0
+          fi
+          
+          REMAINING=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.data.rateLimit.remaining')
+          RESET_AT=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.data.rateLimit.resetAt')
+          
+          echo "GraphQL API points remaining: $REMAINING"
+          
+          if [ "$REMAINING" -le 100 ]; then
+            RESET_EPOCH=$(date -d "$RESET_AT" +%s 2>/dev/null || echo "0")
+            CURRENT_TIME=$(date +%s)
+            SLEEP_TIME=$((RESET_EPOCH - CURRENT_TIME + 60))
+            if [ "$SLEEP_TIME" -gt 0 ]; then
+              echo "GraphQL rate limit nearly exceeded. Sleeping for $SLEEP_TIME seconds..."
+              sleep "$SLEEP_TIME"
+            fi
+          fi
+        }
+
+        retry_with_backoff() {
+          local max_attempts=5
+          local delay=1
+          local attempt=1
+          local command="$*"
+          
+          while [ $attempt -le $max_attempts ]; do
+            echo "Attempt $attempt of $max_attempts: $command"
+            
+            if eval "$command"; then
+              return 0
+            fi
+            
+            local exit_code=$?
+            echo "Command failed with exit code $exit_code"
+            
+            if [ $attempt -eq $max_attempts ]; then
+              echo "Max attempts reached. Command failed."
+              return $exit_code
+            fi
+            
+            echo "Retrying in $delay seconds..."
+            sleep $delay
+            delay=$((delay * 2))
+            attempt=$((attempt + 1))
+          done
+        }
+
+        safe_gh_api() {
+          check_rate_limit_rest
+          retry_with_backoff gh api "$@"
+        }
+
+        safe_gh_graphql() {
+          check_rate_limit_graphql
+          retry_with_backoff gh api graphql "$@"
+        }
+
+        safe_curl() {
+          check_rate_limit_rest
+          retry_with_backoff curl "$@"
+        }
+
         PROJECT_NAME="${{ inputs.project_name }}"
         
         # Fetch the Project ID using v1 API
@@ -364,7 +540,7 @@ jobs:
           }
         }'
 
-        API_RESPONSE=$(gh api graphql -f query="$GRAPHQL_QUERY" -f org="$ORG_NAME")
+        API_RESPONSE=$(safe_gh_graphql -f query="$GRAPHQL_QUERY" -f org="$ORG_NAME")
         
         # Check if the API response is valid JSON
         if ! echo "$API_RESPONSE" | jq empty > /dev/null 2>&1; then
@@ -401,7 +577,7 @@ jobs:
             }
           }'
           
-          ISSUE_RESPONSE=$(gh api graphql -f query="$ISSUE_QUERY" -f owner="im-infomagnus" -f repo="ms-code-with-engineering-playbook" -F issueNumber="$parent")
+          ISSUE_RESPONSE=$(safe_gh_graphql -f query="$ISSUE_QUERY" -f owner="im-infomagnus" -f repo="ms-code-with-engineering-playbook" -F issueNumber="$parent")
           ISSUE_ID=$(echo "$ISSUE_RESPONSE" | jq -r '.data.repository.issue.id')
           echo "Issue Global ID: ${ISSUE_ID}"
           
@@ -414,7 +590,7 @@ jobs:
             }
           }'
           
-          ADD_RESPONSE=$(gh api graphql -f query="$ADD_MUTATION" -f projectId="$PROJECT_ID" -f contentId="$ISSUE_ID")
+          ADD_RESPONSE=$(safe_gh_graphql -f query="$ADD_MUTATION" -f projectId="$PROJECT_ID" -f contentId="$ISSUE_ID")
           echo "Add response: $ADD_RESPONSE"
           
           echo "Issue #$parent added to the project"
@@ -429,7 +605,7 @@ jobs:
           for child in $(jq -c --arg parent "$parent" '.[$parent][]' parent_child_links.json); do
             CHILD_NUMBER=$(echo "$child" | jq -r '.number')
             echo "Linking child issue #$CHILD_NUMBER to parent issue #$parent"
-            curl -s -X POST \
+            safe_curl -s -X POST \
               -H "Authorization: token $GITHUB_TOKEN" \
               -H "Accept: application/vnd.github.v3+json" \
               -d "{\"body\": \"Child of: #$parent\"}" \
@@ -442,6 +618,58 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets[inputs.pat_secret] }}
       run: |
+        # Rate limiting helper functions
+        check_rate_limit_rest() {
+          echo "Checking REST API rate limit..."
+          RATE_LIMIT_RESPONSE=$(gh api rate_limit)
+          REMAINING=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.rate.remaining')
+          RESET_TIME=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.rate.reset')
+          
+          echo "REST API requests remaining: $REMAINING"
+          
+          if [ "$REMAINING" -le 10 ]; then
+            CURRENT_TIME=$(date +%s)
+            SLEEP_TIME=$((RESET_TIME - CURRENT_TIME + 60))
+            if [ "$SLEEP_TIME" -gt 0 ]; then
+              echo "Rate limit nearly exceeded. Sleeping for $SLEEP_TIME seconds..."
+              sleep "$SLEEP_TIME"
+            fi
+          fi
+        }
+
+        retry_with_backoff() {
+          local max_attempts=5
+          local delay=1
+          local attempt=1
+          local command="$*"
+          
+          while [ $attempt -le $max_attempts ]; do
+            echo "Attempt $attempt of $max_attempts: $command"
+            
+            if eval "$command"; then
+              return 0
+            fi
+            
+            local exit_code=$?
+            echo "Command failed with exit code $exit_code"
+            
+            if [ $attempt -eq $max_attempts ]; then
+              echo "Max attempts reached. Command failed."
+              return $exit_code
+            fi
+            
+            echo "Retrying in $delay seconds..."
+            sleep $delay
+            delay=$((delay * 2))
+            attempt=$((attempt + 1))
+          done
+        }
+
+        safe_curl() {
+          check_rate_limit_rest
+          retry_with_backoff curl "$@"
+        }
+
         # Log the contents of the JSON file before updating parent issues
         echo "Contents of parent_child_links.json before updating parent issues:"
         cat parent_child_links.json
@@ -449,7 +677,7 @@ jobs:
         for parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
           CHILD_LINKS=$(jq -r --arg parent "$parent" '.[$parent][] | "- [Issue #\(.number)](\(.url))"' parent_child_links.json | tr '\n' '\n')
           echo "Updating parent issue #$parent with child links"
-          curl -s -X PATCH \
+          safe_curl -s -X PATCH \
             -H "Authorization: token $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
             -d "{\"body\": \"# Linked Child Issues\n$CHILD_LINKS\"}" \
