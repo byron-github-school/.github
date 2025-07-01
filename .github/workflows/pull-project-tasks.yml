@@ -427,7 +427,7 @@ jobs:
         # Link child issues to their parents
         for parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
           for child in $(jq -c --arg parent "$parent" '.[$parent][]' parent_child_links.json); do
-            CHILD_NUMBER=$(echo "$child" | jq -r '.[0]')
+            CHILD_NUMBER=$(echo "$child" | jq -r '.number')
             echo "Linking child issue #$CHILD_NUMBER to parent issue #$parent"
             curl -s -X POST \
               -H "Authorization: token $GITHUB_TOKEN" \
@@ -447,7 +447,7 @@ jobs:
         cat parent_child_links.json
 
         for parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
-          CHILD_LINKS=$(jq -r --arg parent "$parent" '.[$parent][] | "- [Issue #\(.[])](\(.[]))"' parent_child_links.json | tr '\n' '\n')
+          CHILD_LINKS=$(jq -r --arg parent "$parent" '.[$parent][] | "- [Issue #\(.number)](\(.url))"' parent_child_links.json | tr '\n' '\n')
           echo "Updating parent issue #$parent with child links"
           curl -s -X PATCH \
             -H "Authorization: token $GITHUB_TOKEN" \
