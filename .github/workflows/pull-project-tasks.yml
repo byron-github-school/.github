@@ -56,6 +56,13 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets[inputs.pat_secret] }}
       run: |
+
+        # Create an error handler function
+        error_handler() {
+          local line=$1
+          local command=$2
+          echo "::error::Error occurred at line $line: Command '$command' failed"
+        }
         # Rate limiting helper functions
         check_rate_limit_rest() {
           echo "Checking REST API rate limit..."
@@ -354,6 +361,9 @@ jobs:
         }
         #end function
 
+        # Enable error trapping
+        trap 'error_handler ${LINENO} "$BASH_COMMAND"' ERR
+  
         TOP_LEVEL_ISSUES=$(mktemp)
         PAGE=1
         PER_PAGE=100
@@ -468,7 +478,7 @@ jobs:
 
         retry_with_backoff() {
           local max_attempts=5
-          local delay=10
+          local delay=1
           local attempt=1
           local command="$*"
           
