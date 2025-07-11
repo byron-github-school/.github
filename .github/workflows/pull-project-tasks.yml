@@ -468,7 +468,7 @@ jobs:
 
         retry_with_backoff() {
           local max_attempts=5
-          local delay=1
+          local delay=10
           local attempt=1
           local command="$*"
           
