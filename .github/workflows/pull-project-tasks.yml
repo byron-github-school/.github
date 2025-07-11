@@ -142,8 +142,8 @@ jobs:
             exit_code=$?
 
             if [ $exit_code -eq 0 ]; then
-              echo "Command succeeded on attempt $attempt."
-              # Output the response so calling code can capture it
+              echo "Command succeeded on attempt $attempt." >&2
+              # Output only the response so calling code can capture clean JSON
               echo "$response"
               return 0
             else
@@ -529,8 +529,8 @@ jobs:
             exit_code=$?
 
             if [ $exit_code -eq 0 ]; then
-              echo "Command succeeded on attempt $attempt."
-              # Output the response so calling code can capture it
+              echo "Command succeeded on attempt $attempt." >&2
+              # Output only the response so calling code can capture clean JSON
               echo "$response"
               return 0
             else
@@ -742,8 +742,8 @@ jobs:
             exit_code=$?
 
             if [ $exit_code -eq 0 ]; then
-              echo "Command succeeded on attempt $attempt."
-              # Output the response so calling code can capture it
+              echo "Command succeeded on attempt $attempt." >&2
+              # Output only the response so calling code can capture clean JSON
               echo "$response"
               return 0
             else
@@ -968,8 +968,8 @@ jobs:
             exit_code=$?
 
             if [ $exit_code -eq 0 ]; then
-              echo "Command succeeded on attempt $attempt."
-              # Output the response so calling code can capture it
+              echo "Command succeeded on attempt $attempt." >&2
+              # Output only the response so calling code can capture clean JSON
               echo "$response"
               return 0
             else
