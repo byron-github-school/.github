@@ -3,6 +3,22 @@ name: pull-project-tasks
 on:
   workflow_dispatch: # Allows manual triggering of the workflow
     inputs:
+      source_owner:
+        description: 'The owner of the source repository'
+        required: true
+        default: 'im-infomagnus'
+      source_repo:
+        description: 'The name of the source repository'
+        required: true
+        default: 'ms-code-with-engineering-playbook'
+      target_owner:
+        description: 'The owner of the target repository'
+        required: true
+        default: ''
+      target_repo:
+        description: 'The name of the target repository'
+        required: true
+        default: ''
       org_name:
         description: 'The name of the GitHub Organization containing the project'
         required: true
@@ -40,6 +56,94 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets[inputs.pat_secret] }}
       run: |
+        # Rate limiting helper functions
+        check_rate_limit_rest() {
+          echo "Checking REST API rate limit..."
+          RATE_LIMIT_RESPONSE=$(gh api rate_limit)
+          REMAINING=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.rate.remaining')
+          RESET_TIME=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.rate.reset')
+          
+          echo "REST API requests remaining: $REMAINING"
+          
+          if [ "$REMAINING" -le 10 ]; then
+            CURRENT_TIME=$(date +%s)
+            SLEEP_TIME=$((RESET_TIME - CURRENT_TIME + 60))
+            if [ "$SLEEP_TIME" -gt 0 ]; then
+              echo "Rate limit nearly exceeded. Sleeping for $SLEEP_TIME seconds..."
+              sleep "$SLEEP_TIME"
+            fi
+          fi
+        }
+
+        check_rate_limit_graphql() {
+          echo "Checking GraphQL API rate limit..."
+          GRAPHQL_RATE_QUERY='query { rateLimit { remaining resetAt } }'
+          RATE_LIMIT_RESPONSE=$(gh api graphql -f query="$GRAPHQL_RATE_QUERY")
+          
+          if echo "$RATE_LIMIT_RESPONSE" | jq -e '.errors' >/dev/null 2>&1; then
+            echo "Warning: Could not check GraphQL rate limit"
+            return 0
+          fi
+          
+          REMAINING=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.data.rateLimit.remaining')
+          RESET_AT=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.data.rateLimit.resetAt')
+          
+          echo "GraphQL API points remaining: $REMAINING"
+          
+          if [ "$REMAINING" -le 100 ]; then
+            RESET_EPOCH=$(date -d "$RESET_AT" +%s 2>/dev/null || echo "0")
+            CURRENT_TIME=$(date +%s)
+            SLEEP_TIME=$((RESET_EPOCH - CURRENT_TIME + 60))
+            if [ "$SLEEP_TIME" -gt 0 ]; then
+              echo "GraphQL rate limit nearly exceeded. Sleeping for $SLEEP_TIME seconds..."
+              sleep "$SLEEP_TIME"
+            fi
+          fi
+        }
+
+        retry_with_backoff() {
+          local max_attempts=5
+          local delay=1
+          local attempt=1
+          local command="$*"
+          
+          while [ $attempt -le $max_attempts ]; do
+            echo "Attempt $attempt of $max_attempts: $command"
+            
+            if eval "$command"; then
+              return 0
+            fi
+            
+            local exit_code=$?
+            echo "Command failed with exit code $exit_code"
+            
+            if [ $attempt -eq $max_attempts ]; then
+              echo "Max attempts reached. Command failed."
+              return $exit_code
+            fi
+            
+            echo "Retrying in $delay seconds..."
+            sleep $delay
+            delay=$((delay * 2))
+            attempt=$((attempt + 1))
+          done
+        }
+
+        safe_gh_api() {
+          check_rate_limit_rest
+          retry_with_backoff gh api "$@"
+        }
+
+        safe_gh_graphql() {
+          check_rate_limit_graphql
+          retry_with_backoff gh api graphql "$@"
+        }
+
+        safe_curl() {
+          check_rate_limit_rest
+          retry_with_backoff curl "$@"
+        }
+
         # Initialize parent-child relationships file
         echo "{}" > parent_child_links.json
 
@@ -79,9 +183,9 @@ jobs:
           echo "Using integer value for issue_number: $issue_number_int"
 
           # Use alternative approach with direct curl to control JSON types properly
-          ISSUE_ID_RESPONSE=$(curl -s -H "Authorization: bearer $GITHUB_TOKEN" \
+          ISSUE_ID_RESPONSE=$(safe_curl -s -H "Authorization: bearer $GITHUB_TOKEN" \
             -X POST \
-            -d "{\"query\":\"query { repository(owner: \\\"im-infomagnus\\\", name: \\\"ms-code-with-engineering-playbook\\\") { issue(number: $issue_number_int) { id } } }\"}" \
+            -d "{\"query\":\"query { repository(owner: \\\"${{ inputs.source_owner }}\\\", name: \\\"${{ inputs.source_repo }}\\\") { issue(number: $issue_number_int) { id } } }\"}" \
             https://api.github.com/graphql 2>$ERROR_OUTPUT)
 
           # Check for curl errors
@@ -112,7 +216,7 @@ jobs:
           echo "Trying subIssues field query: $QUERY1"
           
           set +e  # Don't exit on error
-          gh api graphql -f query="$QUERY1" -f issue_id="$ISSUE_ID" > subissues_response.json 2>/dev/null
+          safe_gh_graphql -f query="$QUERY1" -f issue_id="$ISSUE_ID" > subissues_response.json 2>/dev/null
           QUERY1_SUCCESS=$?
           set -e
           
@@ -135,7 +239,7 @@ jobs:
             QUERY2="query(\$issue_id: ID!) { node(id: \$issue_id) { ... on Issue { id number body timelineItems(first: 100, itemTypes: [CROSS_REFERENCED_EVENT]) { nodes { ... on CrossReferencedEvent { source { ... on Issue { id number title url } } } } } } } }"
             echo "Trying timeline items query: $QUERY2"
             
-            gh api graphql -f query="$QUERY2" -f issue_id="$ISSUE_ID" > subissues_response.json
+            safe_gh_graphql -f query="$QUERY2" -f issue_id="$ISSUE_ID" > subissues_response.json
             
             # Check if the response contains any errors
             if jq -e '.errors' subissues_response.json > /dev/null 2>&1; then
@@ -170,7 +274,7 @@ jobs:
                   SUBISSUES=""
                   for task_issue_num in $TASK_ISSUE_NUMBERS; do
                     # Create a JSON object for each task issue
-                    TASK_ISSUE_JSON="{\"number\": $task_issue_num, \"title\": \"Task issue #$task_issue_num\", \"url\": \"https://github.com/im-infomagnus/ms-code-with-engineering-playbook/issues/$task_issue_num\"}"
+                    TASK_ISSUE_JSON="{\"number\": $task_issue_num, \"title\": \"Task issue #$task_issue_num\", \"url\": \"https://github.com/${{ inputs.target_owner }}/${{ inputs.target_repo }}/issues/$task_issue_num\"}"
                     if [ -z "$SUBISSUES" ]; then
                       SUBISSUES="$TASK_ISSUE_JSON"
                     else
@@ -231,7 +335,7 @@ jobs:
             echo -e "$SUBISSUES" | while read -r subissue; do
               if [ -n "$subissue" ]; then
                 SUBISSUE_NUMBER=$(echo "$subissue" | jq -r '.number')
-                SUBISSUE_URL=$(echo "$subissue" | jq -r '.url // "https://github.com/im-infomagnus/ms-code-with-engineering-playbook/issues/\(.number)"')
+                SUBISSUE_URL=$(echo "$subissue" | jq -r '.url // "https://github.com/${{ inputs.target_owner }}/${{ inputs.target_repo }}/issues/\(.number)"')
 
                 echo "Linking sub-issue #$SUBISSUE_NUMBER to parent issue #$issue_number"
 
@@ -257,8 +361,8 @@ jobs:
         echo "[]" > "$TOP_LEVEL_ISSUES"
 
         while : ; do
-          echo "Executing gh api command: gh api \"/repos/im-infomagnus/ms-code-with-engineering-playbook/issues?state=open&per_page=$PER_PAGE&page=$PAGE\""
-          RESPONSE=$(gh api "repos/im-infomagnus/ms-code-with-engineering-playbook/issues?state=open&per_page=$PER_PAGE&page=$PAGE")
+          echo "Executing gh api command: gh api \"/repos/${{ inputs.source_owner }}/${{ inputs.source_repo }}/issues?state=open&per_page=$PER_PAGE&page=$PAGE\""
+          RESPONSE=$(safe_gh_api "repos/${{ inputs.source_owner }}/${{ inputs.source_repo }}/issues?state=open&per_page=$PER_PAGE&page=$PAGE")
          
           #echo "Raw response for page $PAGE:"
           #echo "$RESPONSE"
@@ -338,11 +442,259 @@ jobs:
         echo "Contents of parent_child_links.json after processing all issues:"
         cat parent_child_links.json
 
+    - name: Copy Issues to Target Repository and Update URLs
+      id: copy_issues
+      env:
+        GITHUB_TOKEN: ${{ secrets[inputs.pat_secret] }}
+      run: |
+        # Rate limiting helper functions
+        check_rate_limit_rest() {
+          echo "Checking REST API rate limit..."
+          RATE_LIMIT_RESPONSE=$(gh api rate_limit)
+          REMAINING=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.rate.remaining')
+          RESET_TIME=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.rate.reset')
+          
+          echo "REST API requests remaining: $REMAINING"
+          
+          if [ "$REMAINING" -le 10 ]; then
+            CURRENT_TIME=$(date +%s)
+            SLEEP_TIME=$((RESET_TIME - CURRENT_TIME + 60))
+            if [ "$SLEEP_TIME" -gt 0 ]; then
+              echo "Rate limit nearly exceeded. Sleeping for $SLEEP_TIME seconds..."
+              sleep "$SLEEP_TIME"
+            fi
+          fi
+        }
+
+        retry_with_backoff() {
+          local max_attempts=5
+          local delay=1
+          local attempt=1
+          local command="$*"
+          
+          while [ $attempt -le $max_attempts ]; do
+            echo "Attempt $attempt of $max_attempts: $command"
+            
+            if eval "$command"; then
+              return 0
+            fi
+            
+            local exit_code=$?
+            echo "Command failed with exit code $exit_code"
+            
+            if [ $attempt -eq $max_attempts ]; then
+              echo "Max attempts reached. Command failed."
+              return $exit_code
+            fi
+            
+            echo "Retrying in $delay seconds..."
+            sleep $delay
+            delay=$((delay * 2))
+            attempt=$((attempt + 1))
+          done
+        }
+
+        safe_gh_api() {
+          check_rate_limit_rest
+          retry_with_backoff gh api "$@"
+        }
+
+        safe_curl() {
+          check_rate_limit_rest
+          retry_with_backoff curl "$@"
+        }
+
+        # Function to replace URLs in issue body
+        replace_urls_in_text() {
+          local text="$1"
+          # Replace GitHub URLs pointing to source repo with target repo
+          echo "$text" | sed "s|https://github.com/${{ inputs.source_owner }}/${{ inputs.source_repo }}|https://github.com/${{ inputs.target_owner }}/${{ inputs.target_repo }}|g"
+        }
+
+        # Initialize issue mapping file (maps source issue number to target issue number)
+        echo "{}" > issue_mapping.json
+
+        # Get all issues that need to be copied
+        ALL_ISSUES_TO_COPY=$(mktemp)
+        echo "[]" > "$ALL_ISSUES_TO_COPY"
+
+        # Add parent issues
+        for parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
+          jq --arg issue "$parent" '. += [$issue]' "$ALL_ISSUES_TO_COPY" > "${ALL_ISSUES_TO_COPY}.tmp" && mv "${ALL_ISSUES_TO_COPY}.tmp" "$ALL_ISSUES_TO_COPY"
+        done
+
+        # Add child issues
+        for parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
+          for child in $(jq -r --arg parent "$parent" '.[$parent][].number' parent_child_links.json); do
+            # Check if child is not already in the list
+            if ! jq -e --arg child "$child" '. | contains([$child])' "$ALL_ISSUES_TO_COPY" > /dev/null; then
+              jq --arg issue "$child" '. += [$issue]' "$ALL_ISSUES_TO_COPY" > "${ALL_ISSUES_TO_COPY}.tmp" && mv "${ALL_ISSUES_TO_COPY}.tmp" "$ALL_ISSUES_TO_COPY"
+            fi
+          done
+        done
+
+        echo "Issues to copy:"
+        cat "$ALL_ISSUES_TO_COPY"
+
+        # Copy each issue to the target repository
+        for issue_number in $(jq -r '.[]' "$ALL_ISSUES_TO_COPY"); do
+          echo "Copying issue #$issue_number from ${{ inputs.source_owner }}/${{ inputs.source_repo }} to ${{ inputs.target_owner }}/${{ inputs.target_repo }}"
+          
+          # Fetch the original issue
+          ORIGINAL_ISSUE=$(safe_gh_api "repos/${{ inputs.source_owner }}/${{ inputs.source_repo }}/issues/$issue_number")
+          
+          if [ $? -ne 0 ] || [ -z "$ORIGINAL_ISSUE" ]; then
+            echo "Failed to fetch issue #$issue_number from source repository"
+            continue
+          fi
+
+          ISSUE_TITLE=$(echo "$ORIGINAL_ISSUE" | jq -r '.title')
+          ISSUE_BODY=$(echo "$ORIGINAL_ISSUE" | jq -r '.body // ""')
+          ISSUE_LABELS=$(echo "$ORIGINAL_ISSUE" | jq -r '.labels[].name')
+          
+          # Replace URLs in the issue body
+          UPDATED_BODY=$(replace_urls_in_text "$ISSUE_BODY")
+          
+          # Add reference to original issue
+          UPDATED_BODY="$UPDATED_BODY"$'\n\n---\n'"*Copied from: https://github.com/${{ inputs.source_owner }}/${{ inputs.source_repo }}/issues/$issue_number*"
+
+          # Create labels array for the API call
+          LABELS_JSON="[]"
+          if [ -n "$ISSUE_LABELS" ]; then
+            LABELS_JSON=$(echo "$ISSUE_LABELS" | jq -R -s 'split("\n") | map(select(length > 0))')
+          fi
+
+          # Create the new issue in the target repository
+          NEW_ISSUE_DATA=$(jq -n \
+            --arg title "$ISSUE_TITLE" \
+            --arg body "$UPDATED_BODY" \
+            --argjson labels "$LABELS_JSON" \
+            '{title: $title, body: $body, labels: $labels}')
+
+          echo "Creating issue with data: $NEW_ISSUE_DATA"
+
+          NEW_ISSUE_RESPONSE=$(safe_curl -s -X POST \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -H "Content-Type: application/json" \
+            -d "$NEW_ISSUE_DATA" \
+            "https://api.github.com/repos/${{ inputs.target_owner }}/${{ inputs.target_repo }}/issues")
+
+          if [ $? -ne 0 ]; then
+            echo "Failed to create issue in target repository"
+            continue
+          fi
+
+          NEW_ISSUE_NUMBER=$(echo "$NEW_ISSUE_RESPONSE" | jq -r '.number')
+          
+          if [ "$NEW_ISSUE_NUMBER" == "null" ] || [ -z "$NEW_ISSUE_NUMBER" ]; then
+            echo "Failed to get new issue number. Response: $NEW_ISSUE_RESPONSE"
+            continue
+          fi
+
+          echo "Created new issue #$NEW_ISSUE_NUMBER in target repository"
+          
+          # Store the mapping
+          jq --arg source "$issue_number" --arg target "$NEW_ISSUE_NUMBER" \
+            '. + {($source): $target}' issue_mapping.json > temp.json && mv temp.json issue_mapping.json
+        done
+
+        echo "Issue mapping:"
+        cat issue_mapping.json
+
     - name: Add Issues to GitHub Project and Maintain Relationships
       id: add_issues
       env:
         GITHUB_TOKEN: ${{ secrets[inputs.pat_secret] }}
       run: |
+        # Rate limiting helper functions
+        check_rate_limit_rest() {
+          echo "Checking REST API rate limit..."
+          RATE_LIMIT_RESPONSE=$(gh api rate_limit)
+          REMAINING=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.rate.remaining')
+          RESET_TIME=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.rate.reset')
+          
+          echo "REST API requests remaining: $REMAINING"
+          
+          if [ "$REMAINING" -le 10 ]; then
+            CURRENT_TIME=$(date +%s)
+            SLEEP_TIME=$((RESET_TIME - CURRENT_TIME + 60))
+            if [ "$SLEEP_TIME" -gt 0 ]; then
+              echo "Rate limit nearly exceeded. Sleeping for $SLEEP_TIME seconds..."
+              sleep "$SLEEP_TIME"
+            fi
+          fi
+        }
+
+        check_rate_limit_graphql() {
+          echo "Checking GraphQL API rate limit..."
+          GRAPHQL_RATE_QUERY='query { rateLimit { remaining resetAt } }'
+          RATE_LIMIT_RESPONSE=$(gh api graphql -f query="$GRAPHQL_RATE_QUERY")
+          
+          if echo "$RATE_LIMIT_RESPONSE" | jq -e '.errors' >/dev/null 2>&1; then
+            echo "Warning: Could not check GraphQL rate limit"
+            return 0
+          fi
+          
+          REMAINING=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.data.rateLimit.remaining')
+          RESET_AT=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.data.rateLimit.resetAt')
+          
+          echo "GraphQL API points remaining: $REMAINING"
+          
+          if [ "$REMAINING" -le 100 ]; then
+            RESET_EPOCH=$(date -d "$RESET_AT" +%s 2>/dev/null || echo "0")
+            CURRENT_TIME=$(date +%s)
+            SLEEP_TIME=$((RESET_EPOCH - CURRENT_TIME + 60))
+            if [ "$SLEEP_TIME" -gt 0 ]; then
+              echo "GraphQL rate limit nearly exceeded. Sleeping for $SLEEP_TIME seconds..."
+              sleep "$SLEEP_TIME"
+            fi
+          fi
+        }
+
+        retry_with_backoff() {
+          local max_attempts=5
+          local delay=1
+          local attempt=1
+          local command="$*"
+          
+          while [ $attempt -le $max_attempts ]; do
+            echo "Attempt $attempt of $max_attempts: $command"
+            
+            if eval "$command"; then
+              return 0
+            fi
+            
+            local exit_code=$?
+            echo "Command failed with exit code $exit_code"
+            
+            if [ $attempt -eq $max_attempts ]; then
+              echo "Max attempts reached. Command failed."
+              return $exit_code
+            fi
+            
+            echo "Retrying in $delay seconds..."
+            sleep $delay
+            delay=$((delay * 2))
+            attempt=$((attempt + 1))
+          done
+        }
+
+        safe_gh_api() {
+          check_rate_limit_rest
+          retry_with_backoff gh api "$@"
+        }
+
+        safe_gh_graphql() {
+          check_rate_limit_graphql
+          retry_with_backoff gh api graphql "$@"
+        }
+
+        safe_curl() {
+          check_rate_limit_rest
+          retry_with_backoff curl "$@"
+        }
+
         PROJECT_NAME="${{ inputs.project_name }}"
         
         # Fetch the Project ID using v1 API
@@ -364,7 +716,7 @@ jobs:
           }
         }'
 
-        API_RESPONSE=$(gh api graphql -f query="$GRAPHQL_QUERY" -f org="$ORG_NAME")
+        API_RESPONSE=$(safe_gh_graphql -f query="$GRAPHQL_QUERY" -f org="$ORG_NAME")
         
         # Check if the API response is valid JSON
         if ! echo "$API_RESPONSE" | jq empty > /dev/null 2>&1; then
@@ -387,10 +739,20 @@ jobs:
         # Log the contents of the JSON file before adding issues
         echo "Contents of parent_child_links.json before adding issues to the project:"
         cat parent_child_links.json
+        echo "Contents of issue_mapping.json:"
+        cat issue_mapping.json
 
-        # Add all issues to the project
-        for parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
-          echo "Adding issue #$parent to the project"
+        # Add all issues to the project using the new issue numbers from target repository
+        for source_parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
+          # Get the target issue number from mapping
+          target_parent=$(jq -r --arg source "$source_parent" '.[$source] // empty' issue_mapping.json)
+          
+          if [ -z "$target_parent" ] || [ "$target_parent" == "null" ]; then
+            echo "No target issue found for source issue #$source_parent, skipping"
+            continue
+          fi
+          
+          echo "Adding issue #$target_parent to the project (mapped from source #$source_parent)"
           
           TODO: the following throws error Cannot index object with number
           # Get the issue ID using GraphQL (Global ID needed for Projects v2)
@@ -402,7 +764,7 @@ jobs:
             }
           }'
           
-          ISSUE_RESPONSE=$(gh api graphql -f query="$ISSUE_QUERY" -f owner="im-infomagnus" -f repo="ms-code-with-engineering-playbook" -F issueNumber="$parent")
+          ISSUE_RESPONSE=$(safe_gh_graphql -f query="$ISSUE_QUERY" -f owner="${{ inputs.target_owner }}" -f repo="${{ inputs.target_repo }}" -F issueNumber="$target_parent")
           ISSUE_ID=$(echo "$ISSUE_RESPONSE" | jq -r '.data.repository.issue.id')
           echo "Issue Global ID: ${ISSUE_ID}"
           
@@ -415,27 +777,43 @@ jobs:
             }
           }'
           
-          ADD_RESPONSE=$(gh api graphql -f query="$ADD_MUTATION" -f projectId="$PROJECT_ID" -f contentId="$ISSUE_ID")
+          ADD_RESPONSE=$(safe_gh_graphql -f query="$ADD_MUTATION" -f projectId="$PROJECT_ID" -f contentId="$ISSUE_ID")
           echo "Add response: $ADD_RESPONSE"
           
-          echo "Issue #$parent added to the project"
+          echo "Issue #$target_parent added to the project"
         done
 
         # Log the contents of the JSON file before linking child issues
         echo "add_issues: Contents of parent_child_links.json before linking child issues:"
         cat parent_child_links.json
+        echo "Contents of issue_mapping.json:"
+        cat issue_mapping.json
 
-        # Link child issues to their parents
-        for parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
-          for child in $(jq -c --arg parent "$parent" '.[$parent][]' parent_child_links.json); do
-            CHILD_NUMBER=$(echo "$child" | jq -r '.[0]')
-            echo "Linking child issue #$CHILD_NUMBER to parent issue #$parent"
-            curl -s -X POST \
+        # Link child issues to their parents using target repository issue numbers
+        for source_parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
+          target_parent=$(jq -r --arg source "$source_parent" '.[$source] // empty' issue_mapping.json)
+          
+          if [ -z "$target_parent" ] || [ "$target_parent" == "null" ]; then
+            echo "No target issue found for source parent #$source_parent, skipping"
+            continue
+          fi
+          
+          for child in $(jq -c --arg parent "$source_parent" '.[$parent][]' parent_child_links.json); do
+            SOURCE_CHILD_NUMBER=$(echo "$child" | jq -r '.number')
+            TARGET_CHILD_NUMBER=$(jq -r --arg source "$SOURCE_CHILD_NUMBER" '.[$source] // empty' issue_mapping.json)
+            
+            if [ -z "$TARGET_CHILD_NUMBER" ] || [ "$TARGET_CHILD_NUMBER" == "null" ]; then
+              echo "No target issue found for source child #$SOURCE_CHILD_NUMBER, skipping"
+              continue
+            fi
+            
+            echo "Linking child issue #$TARGET_CHILD_NUMBER to parent issue #$target_parent in target repository"
+            safe_curl -s -X POST \
               -H "Authorization: token $GITHUB_TOKEN" \
               -H "Accept: application/vnd.github.v3+json" \
-              -d "{\"body\": \"Child of: #$parent\"}" \
-              "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues/$CHILD_NUMBER/comments"
-            echo "Child Issue #$CHILD_NUMBER linked to Parent Issue #$parent"
+              -d "{\"body\": \"Child of: #$target_parent\"}" \
+              "https://api.github.com/repos/${{ inputs.target_owner }}/${{ inputs.target_repo }}/issues/$TARGET_CHILD_NUMBER/comments"
+            echo "Child Issue #$TARGET_CHILD_NUMBER linked to Parent Issue #$target_parent"
           done
         done
 
@@ -443,18 +821,96 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets[inputs.pat_secret] }}
       run: |
+        # Rate limiting helper functions
+        check_rate_limit_rest() {
+          echo "Checking REST API rate limit..."
+          RATE_LIMIT_RESPONSE=$(gh api rate_limit)
+          REMAINING=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.rate.remaining')
+          RESET_TIME=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.rate.reset')
+          
+          echo "REST API requests remaining: $REMAINING"
+          
+          if [ "$REMAINING" -le 10 ]; then
+            CURRENT_TIME=$(date +%s)
+            SLEEP_TIME=$((RESET_TIME - CURRENT_TIME + 60))
+            if [ "$SLEEP_TIME" -gt 0 ]; then
+              echo "Rate limit nearly exceeded. Sleeping for $SLEEP_TIME seconds..."
+              sleep "$SLEEP_TIME"
+            fi
+          fi
+        }
+
+        retry_with_backoff() {
+          local max_attempts=5
+          local delay=1
+          local attempt=1
+          local command="$*"
+          
+          while [ $attempt -le $max_attempts ]; do
+            echo "Attempt $attempt of $max_attempts: $command"
+            
+            if eval "$command"; then
+              return 0
+            fi
+            
+            local exit_code=$?
+            echo "Command failed with exit code $exit_code"
+            
+            if [ $attempt -eq $max_attempts ]; then
+              echo "Max attempts reached. Command failed."
+              return $exit_code
+            fi
+            
+            echo "Retrying in $delay seconds..."
+            sleep $delay
+            delay=$((delay * 2))
+            attempt=$((attempt + 1))
+          done
+        }
+
+        safe_curl() {
+          check_rate_limit_rest
+          retry_with_backoff curl "$@"
+        }
+
         # Log the contents of the JSON file before updating parent issues
         echo "Contents of parent_child_links.json before updating parent issues:"
         cat parent_child_links.json
+        echo "Contents of issue_mapping.json:"
+        cat issue_mapping.json
 
-        for parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
-          CHILD_LINKS=$(jq -r --arg parent "$parent" '.[$parent][] | "- [Issue #\(.[])](\(.[]))"' parent_child_links.json | tr '\n' '\n')
-          echo "Updating parent issue #$parent with child links"
-          curl -s -X PATCH \
-            -H "Authorization: token $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github.v3+json" \
-            -d "{\"body\": \"# Linked Child Issues\n$CHILD_LINKS\"}" \
-            "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues/$parent"
-          echo "Parent Issue #$parent updated with child links."
+        for source_parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
+          target_parent=$(jq -r --arg source "$source_parent" '.[$source] // empty' issue_mapping.json)
+          
+          if [ -z "$target_parent" ] || [ "$target_parent" == "null" ]; then
+            echo "No target issue found for source parent #$source_parent, skipping"
+            continue
+          fi
+          
+          # Build child links using target issue numbers and URLs
+          CHILD_LINKS=""
+          for child in $(jq -c --arg parent "$source_parent" '.[$parent][]' parent_child_links.json); do
+            SOURCE_CHILD_NUMBER=$(echo "$child" | jq -r '.number')
+            TARGET_CHILD_NUMBER=$(jq -r --arg source "$SOURCE_CHILD_NUMBER" '.[$source] // empty' issue_mapping.json)
+            
+            if [ -n "$TARGET_CHILD_NUMBER" ] && [ "$TARGET_CHILD_NUMBER" != "null" ]; then
+              CHILD_URL="https://github.com/${{ inputs.target_owner }}/${{ inputs.target_repo }}/issues/$TARGET_CHILD_NUMBER"
+              if [ -z "$CHILD_LINKS" ]; then
+                CHILD_LINKS="- [Issue #$TARGET_CHILD_NUMBER]($CHILD_URL)"
+              else
+                CHILD_LINKS="$CHILD_LINKS\n- [Issue #$TARGET_CHILD_NUMBER]($CHILD_URL)"
+              fi
+            fi
+          done
+          
+          if [ -n "$CHILD_LINKS" ]; then
+            echo "Updating parent issue #$target_parent with child links"
+            safe_curl -s -X PATCH \
+              -H "Authorization: token $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              -d "{\"body\": \"# Linked Child Issues\n$CHILD_LINKS\"}" \
+              "https://api.github.com/repos/${{ inputs.target_owner }}/${{ inputs.target_repo }}/issues/$target_parent"
+            echo "Parent Issue #$target_parent updated with child links."
+          fi
         done
         echo "All parent issues updated with child links."
