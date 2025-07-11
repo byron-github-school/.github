@@ -72,15 +72,6 @@ jobs:
           
           echo "REST API requests remaining: $REMAINING"
           
-          # Check if REMAINING is a valid number
-          if ! [[ "$REMAINING" =~ ^[0-9]+$ ]]; then
-            echo "Warning: Could not parse remaining rate limit, proceeding anyway"
-            return 0
-          fi
-          
-          # Issue states rate limit check should pass if above 1000
-          # Only sleep if we're running low on requests
-          
           if [ "$REMAINING" -le 10 ]; then
             CURRENT_TIME=$(date +%s)
             SLEEP_TIME=$((RESET_TIME - CURRENT_TIME + 60))
@@ -105,15 +96,6 @@ jobs:
           RESET_AT=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.data.rateLimit.resetAt')
           
           echo "GraphQL API points remaining: $REMAINING"
-          
-          # Check if REMAINING is a valid number
-          if ! [[ "$REMAINING" =~ ^[0-9]+$ ]]; then
-            echo "Warning: Could not parse remaining rate limit, proceeding anyway"
-            return 0
-          fi
-          
-          # Issue states rate limit check should pass if above 1000
-          # Only sleep if we're running low on requests
           
           if [ "$REMAINING" -le 100 ]; then
             RESET_EPOCH=$(date -d "$RESET_AT" +%s 2>/dev/null || echo "0")
@@ -492,15 +474,6 @@ jobs:
           
           echo "REST API requests remaining: $REMAINING"
           
-          # Check if REMAINING is a valid number
-          if ! [[ "$REMAINING" =~ ^[0-9]+$ ]]; then
-            echo "Warning: Could not parse remaining rate limit, proceeding anyway"
-            return 0
-          fi
-          
-          # Issue states rate limit check should pass if above 1000
-          # Only sleep if we're running low on requests
-          
           if [ "$REMAINING" -le 10 ]; then
             CURRENT_TIME=$(date +%s)
             SLEEP_TIME=$((RESET_TIME - CURRENT_TIME + 60))
@@ -661,15 +634,6 @@ jobs:
           
           echo "REST API requests remaining: $REMAINING"
           
-          # Check if REMAINING is a valid number
-          if ! [[ "$REMAINING" =~ ^[0-9]+$ ]]; then
-            echo "Warning: Could not parse remaining rate limit, proceeding anyway"
-            return 0
-          fi
-          
-          # Issue states rate limit check should pass if above 1000
-          # Only sleep if we're running low on requests
-          
           if [ "$REMAINING" -le 10 ]; then
             CURRENT_TIME=$(date +%s)
             SLEEP_TIME=$((RESET_TIME - CURRENT_TIME + 60))
@@ -694,15 +658,6 @@ jobs:
           RESET_AT=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.data.rateLimit.resetAt')
           
           echo "GraphQL API points remaining: $REMAINING"
-          
-          # Check if REMAINING is a valid number
-          if ! [[ "$REMAINING" =~ ^[0-9]+$ ]]; then
-            echo "Warning: Could not parse remaining rate limit, proceeding anyway"
-            return 0
-          fi
-          
-          # Issue states rate limit check should pass if above 1000
-          # Only sleep if we're running low on requests
           
           if [ "$REMAINING" -le 100 ]; then
             RESET_EPOCH=$(date -d "$RESET_AT" +%s 2>/dev/null || echo "0")
@@ -823,9 +778,7 @@ jobs:
           
           echo "Adding issue #$target_parent to the project (mapped from source #$source_parent)"
           
-          # Convert target_parent to integer to ensure proper GraphQL typing
-          target_parent_int=$((10#$target_parent))
-          
+          TODO: the following throws error Cannot index object with number
           # Get the issue ID using GraphQL (Global ID needed for Projects v2)
           ISSUE_QUERY='query($owner: String!, $repo: String!, $issueNumber: Int!) {
             repository(owner: $owner, name: $repo) {
@@ -835,22 +788,8 @@ jobs:
             }
           }'
           
-          ISSUE_RESPONSE=$(safe_gh_graphql -f query="$ISSUE_QUERY" -f owner="${{ inputs.target_owner }}" -f repo="${{ inputs.target_repo }}" -F issueNumber="$target_parent_int")
-          
-          # Check for GraphQL errors in the response
-          if echo "$ISSUE_RESPONSE" | jq -e '.errors' >/dev/null 2>&1; then
-            echo "Error getting issue ID for #$target_parent:"
-            echo "$ISSUE_RESPONSE" | jq '.errors'
-            continue
-          fi
-          
+          ISSUE_RESPONSE=$(safe_gh_graphql -f query="$ISSUE_QUERY" -f owner="${{ inputs.target_owner }}" -f repo="${{ inputs.target_repo }}" -F issueNumber="$target_parent")
           ISSUE_ID=$(echo "$ISSUE_RESPONSE" | jq -r '.data.repository.issue.id')
-          
-          if [ -z "$ISSUE_ID" ] || [ "$ISSUE_ID" == "null" ]; then
-            echo "Failed to get Global ID for issue #$target_parent, skipping"
-            continue
-          fi
-          
           echo "Issue Global ID: ${ISSUE_ID}"
           
           # Add the issue to the project using GraphQL mutation for Projects v2
@@ -863,14 +802,9 @@ jobs:
           }'
           
           ADD_RESPONSE=$(safe_gh_graphql -f query="$ADD_MUTATION" -f projectId="$PROJECT_ID" -f contentId="$ISSUE_ID")
+          echo "Add response: $ADD_RESPONSE"
           
-          # Check for errors in adding to project
-          if echo "$ADD_RESPONSE" | jq -e '.errors' >/dev/null 2>&1; then
-            echo "Warning: Could not add issue #$target_parent to project:"
-            echo "$ADD_RESPONSE" | jq '.errors'
-          else
-            echo "Issue #$target_parent successfully added to the project"
-          fi
+          echo "Issue #$target_parent added to the project"
         done
 
         # Log the contents of the JSON file before linking child issues
@@ -919,15 +853,6 @@ jobs:
           RESET_TIME=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.rate.reset')
           
           echo "REST API requests remaining: $REMAINING"
-          
-          # Check if REMAINING is a valid number
-          if ! [[ "$REMAINING" =~ ^[0-9]+$ ]]; then
-            echo "Warning: Could not parse remaining rate limit, proceeding anyway"
-            return 0
-          fi
-          
-          # Issue states rate limit check should pass if above 1000
-          # Only sleep if we're running low on requests
           
           if [ "$REMAINING" -le 10 ]; then
             CURRENT_TIME=$(date +%s)
