@@ -135,19 +135,17 @@ jobs:
           while [ $attempt -le $max_attempts ]; do
             echo "Attempt $attempt of $max_attempts: $*"
 
-            # Capture both stdout and stderr, and the exit code
-            local response
-            local exit_code
-            response=$("$@" 2>&1)
-            exit_code=$?
-
-            if [ $exit_code -eq 0 ]; then
+            # Run the command directly, not via eval
+            if "$@"; then
               echo "Command succeeded on attempt $attempt."
-              # Output the response so calling code can capture it
-              echo "$response"
               return 0
             else
+              local exit_code=$?
               echo "Command failed with exit code $exit_code on attempt $attempt."
+              
+              # Log the response from the command
+              local response
+              response=$("$@" 2>&1)
               echo "Command response: $response"
 
               if [ $attempt -eq $max_attempts ]; then
@@ -522,19 +520,17 @@ jobs:
           while [ $attempt -le $max_attempts ]; do
             echo "Attempt $attempt of $max_attempts: $*"
 
-            # Capture both stdout and stderr, and the exit code
-            local response
-            local exit_code
-            response=$("$@" 2>&1)
-            exit_code=$?
-
-            if [ $exit_code -eq 0 ]; then
+            # Run the command directly, not via eval
+            if "$@"; then
               echo "Command succeeded on attempt $attempt."
-              # Output the response so calling code can capture it
-              echo "$response"
               return 0
             else
+              local exit_code=$?
               echo "Command failed with exit code $exit_code on attempt $attempt."
+              
+              # Log the response from the command
+              local response
+              response=$("$@" 2>&1)
               echo "Command response: $response"
 
               if [ $attempt -eq $max_attempts ]; then
@@ -735,19 +731,17 @@ jobs:
           while [ $attempt -le $max_attempts ]; do
             echo "Attempt $attempt of $max_attempts: $*"
 
-            # Capture both stdout and stderr, and the exit code
-            local response
-            local exit_code
-            response=$("$@" 2>&1)
-            exit_code=$?
-
-            if [ $exit_code -eq 0 ]; then
+            # Run the command directly, not via eval
+            if "$@"; then
               echo "Command succeeded on attempt $attempt."
-              # Output the response so calling code can capture it
-              echo "$response"
               return 0
             else
+              local exit_code=$?
               echo "Command failed with exit code $exit_code on attempt $attempt."
+              
+              # Log the response from the command
+              local response
+              response=$("$@" 2>&1)
               echo "Command response: $response"
 
               if [ $attempt -eq $max_attempts ]; then
@@ -961,19 +955,17 @@ jobs:
           while [ $attempt -le $max_attempts ]; do
             echo "Attempt $attempt of $max_attempts: $*"
 
-            # Capture both stdout and stderr, and the exit code
-            local response
-            local exit_code
-            response=$("$@" 2>&1)
-            exit_code=$?
-
-            if [ $exit_code -eq 0 ]; then
+            # Run the command directly, not via eval
+            if "$@"; then
               echo "Command succeeded on attempt $attempt."
-              # Output the response so calling code can capture it
-              echo "$response"
               return 0
             else
+              local exit_code=$?
               echo "Command failed with exit code $exit_code on attempt $attempt."
+              
+              # Log the response from the command
+              local response
+              response=$("$@" 2>&1)
               echo "Command response: $response"
 
               if [ $attempt -eq $max_attempts ]; then
