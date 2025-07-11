@@ -515,27 +515,34 @@ jobs:
           local max_attempts=5
           local delay=1
           local attempt=1
-          local command="$*"
-          
+
+          # Accept command as arguments, not as a single string
           while [ $attempt -le $max_attempts ]; do
-            echo "Attempt $attempt of $max_attempts: $command"
-            
-            if eval "$command"; then
+            echo "Attempt $attempt of $max_attempts: $*"
+
+            # Run the command directly, not via eval
+            if "$@"; then
+              echo "Command succeeded on attempt $attempt."
               return 0
+            else
+              local exit_code=$?
+              echo "Command failed with exit code $exit_code on attempt $attempt."
+              
+              # Log the response from the command
+              local response
+              response=$("$@" 2>&1)
+              echo "Command response: $response"
+
+              if [ $attempt -eq $max_attempts ]; then
+                echo "Max attempts reached. Command failed with exit code $exit_code."
+                return $exit_code
+              fi
+
+              echo "Retrying in $delay seconds..."
+              sleep $delay
+              delay=$((delay * 2))
+              attempt=$((attempt + 1))
             fi
-            
-            local exit_code=$?
-            echo "Command failed with exit code $exit_code"
-            
-            if [ $attempt -eq $max_attempts ]; then
-              echo "Max attempts reached. Command failed."
-              return $exit_code
-            fi
-            
-            echo "Retrying in $delay seconds..."
-            sleep $delay
-            delay=$((delay * 2))
-            attempt=$((attempt + 1))
           done
         }
 
