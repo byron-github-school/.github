@@ -392,6 +392,7 @@ jobs:
         for parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
           echo "Adding issue #$parent to the project"
           
+          TODO: the following throws error Cannot index object with number
           # Get the issue ID using GraphQL (Global ID needed for Projects v2)
           ISSUE_QUERY='query($owner: String!, $repo: String!, $issueNumber: Int!) {
             repository(owner: $owner, name: $repo) {
@@ -421,7 +422,7 @@ jobs:
         done
 
         # Log the contents of the JSON file before linking child issues
-        echo "Contents of parent_child_links.json before linking child issues:"
+        echo "add_issues: Contents of parent_child_links.json before linking child issues:"
         cat parent_child_links.json
 
         # Link child issues to their parents
