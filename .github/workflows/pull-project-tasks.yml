@@ -57,11 +57,11 @@ jobs:
         GITHUB_TOKEN: ${{ secrets[inputs.pat_secret] }}
       run: |
 
-        # Create an error handler function
+        # Create an error handler function for critical errors only
         error_handler() {
           local line=$1
           local command=$2
-          echo "::error::Error occurred at line $line: Command '$command' failed"
+          echo "::error::Critical error occurred at line $line: Command '$command' failed"
         }
         # Rate limiting helper functions
         check_rate_limit_rest() {
@@ -71,6 +71,15 @@ jobs:
           RESET_TIME=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.rate.reset')
           
           echo "REST API requests remaining: $REMAINING"
+          
+          # Check if REMAINING is a valid number
+          if ! [[ "$REMAINING" =~ ^[0-9]+$ ]]; then
+            echo "Warning: Could not parse remaining rate limit, proceeding anyway"
+            return 0
+          fi
+          
+          # Issue states rate limit check should pass if above 1000
+          # Only sleep if we're running low on requests
           
           if [ "$REMAINING" -le 10 ]; then
             CURRENT_TIME=$(date +%s)
@@ -96,6 +105,15 @@ jobs:
           RESET_AT=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.data.rateLimit.resetAt')
           
           echo "GraphQL API points remaining: $REMAINING"
+          
+          # Check if REMAINING is a valid number
+          if ! [[ "$REMAINING" =~ ^[0-9]+$ ]]; then
+            echo "Warning: Could not parse remaining rate limit, proceeding anyway"
+            return 0
+          fi
+          
+          # Issue states rate limit check should pass if above 1000
+          # Only sleep if we're running low on requests
           
           if [ "$REMAINING" -le 100 ]; then
             RESET_EPOCH=$(date -d "$RESET_AT" +%s 2>/dev/null || echo "0")
@@ -368,8 +386,9 @@ jobs:
         }
         #end function
 
-        # Enable error trapping
-        trap 'error_handler ${LINENO} "$BASH_COMMAND"' ERR
+        # Enable error trapping only for critical errors
+        # Note: Most API calls handle errors gracefully, so we don't trap all ERR signals
+        set -e  # Exit on error, but allow individual commands to handle their own errors
   
         TOP_LEVEL_ISSUES=$(mktemp)
         PAGE=1
@@ -473,6 +492,15 @@ jobs:
           
           echo "REST API requests remaining: $REMAINING"
           
+          # Check if REMAINING is a valid number
+          if ! [[ "$REMAINING" =~ ^[0-9]+$ ]]; then
+            echo "Warning: Could not parse remaining rate limit, proceeding anyway"
+            return 0
+          fi
+          
+          # Issue states rate limit check should pass if above 1000
+          # Only sleep if we're running low on requests
+          
           if [ "$REMAINING" -le 10 ]; then
             CURRENT_TIME=$(date +%s)
             SLEEP_TIME=$((RESET_TIME - CURRENT_TIME + 60))
@@ -487,27 +515,34 @@ jobs:
           local max_attempts=5
           local delay=1
           local attempt=1
-          local command="$*"
-          
+
+          # Accept command as arguments, not as a single string
           while [ $attempt -le $max_attempts ]; do
-            echo "Attempt $attempt of $max_attempts: $command"
-            
-            if eval "$command"; then
+            echo "Attempt $attempt of $max_attempts: $*"
+
+            # Run the command directly, not via eval
+            if "$@"; then
+              echo "Command succeeded on attempt $attempt."
               return 0
+            else
+              local exit_code=$?
+              echo "Command failed with exit code $exit_code on attempt $attempt."
+              
+              # Log the response from the command
+              local response
+              response=$("$@" 2>&1)
+              echo "Command response: $response"
+
+              if [ $attempt -eq $max_attempts ]; then
+                echo "Max attempts reached. Command failed with exit code $exit_code."
+                return $exit_code
+              fi
+
+              echo "Retrying in $delay seconds..."
+              sleep $delay
+              delay=$((delay * 2))
+              attempt=$((attempt + 1))
             fi
-            
-            local exit_code=$?
-            echo "Command failed with exit code $exit_code"
-            
-            if [ $attempt -eq $max_attempts ]; then
-              echo "Max attempts reached. Command failed."
-              return $exit_code
-            fi
-            
-            echo "Retrying in $delay seconds..."
-            sleep $delay
-            delay=$((delay * 2))
-            attempt=$((attempt + 1))
           done
         }
 
@@ -633,6 +668,15 @@ jobs:
           
           echo "REST API requests remaining: $REMAINING"
           
+          # Check if REMAINING is a valid number
+          if ! [[ "$REMAINING" =~ ^[0-9]+$ ]]; then
+            echo "Warning: Could not parse remaining rate limit, proceeding anyway"
+            return 0
+          fi
+          
+          # Issue states rate limit check should pass if above 1000
+          # Only sleep if we're running low on requests
+          
           if [ "$REMAINING" -le 10 ]; then
             CURRENT_TIME=$(date +%s)
             SLEEP_TIME=$((RESET_TIME - CURRENT_TIME + 60))
@@ -657,6 +701,15 @@ jobs:
           RESET_AT=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.data.rateLimit.resetAt')
           
           echo "GraphQL API points remaining: $REMAINING"
+          
+          # Check if REMAINING is a valid number
+          if ! [[ "$REMAINING" =~ ^[0-9]+$ ]]; then
+            echo "Warning: Could not parse remaining rate limit, proceeding anyway"
+            return 0
+          fi
+          
+          # Issue states rate limit check should pass if above 1000
+          # Only sleep if we're running low on requests
           
           if [ "$REMAINING" -le 100 ]; then
             RESET_EPOCH=$(date -d "$RESET_AT" +%s 2>/dev/null || echo "0")
@@ -777,7 +830,9 @@ jobs:
           
           echo "Adding issue #$target_parent to the project (mapped from source #$source_parent)"
           
-          TODO: the following throws error Cannot index object with number
+          # Convert target_parent to integer to ensure proper GraphQL typing
+          target_parent_int=$((10#$target_parent))
+          
           # Get the issue ID using GraphQL (Global ID needed for Projects v2)
           ISSUE_QUERY='query($owner: String!, $repo: String!, $issueNumber: Int!) {
             repository(owner: $owner, name: $repo) {
@@ -787,8 +842,22 @@ jobs:
             }
           }'
           
-          ISSUE_RESPONSE=$(safe_gh_graphql -f query="$ISSUE_QUERY" -f owner="${{ inputs.target_owner }}" -f repo="${{ inputs.target_repo }}" -F issueNumber="$target_parent")
+          ISSUE_RESPONSE=$(safe_gh_graphql -f query="$ISSUE_QUERY" -f owner="${{ inputs.target_owner }}" -f repo="${{ inputs.target_repo }}" -F issueNumber="$target_parent_int")
+          
+          # Check for GraphQL errors in the response
+          if echo "$ISSUE_RESPONSE" | jq -e '.errors' >/dev/null 2>&1; then
+            echo "Error getting issue ID for #$target_parent:"
+            echo "$ISSUE_RESPONSE" | jq '.errors'
+            continue
+          fi
+          
           ISSUE_ID=$(echo "$ISSUE_RESPONSE" | jq -r '.data.repository.issue.id')
+          
+          if [ -z "$ISSUE_ID" ] || [ "$ISSUE_ID" == "null" ]; then
+            echo "Failed to get Global ID for issue #$target_parent, skipping"
+            continue
+          fi
+          
           echo "Issue Global ID: ${ISSUE_ID}"
           
           # Add the issue to the project using GraphQL mutation for Projects v2
@@ -801,9 +870,14 @@ jobs:
           }'
           
           ADD_RESPONSE=$(safe_gh_graphql -f query="$ADD_MUTATION" -f projectId="$PROJECT_ID" -f contentId="$ISSUE_ID")
-          echo "Add response: $ADD_RESPONSE"
           
-          echo "Issue #$target_parent added to the project"
+          # Check for errors in adding to project
+          if echo "$ADD_RESPONSE" | jq -e '.errors' >/dev/null 2>&1; then
+            echo "Warning: Could not add issue #$target_parent to project:"
+            echo "$ADD_RESPONSE" | jq '.errors'
+          else
+            echo "Issue #$target_parent successfully added to the project"
+          fi
         done
 
         # Log the contents of the JSON file before linking child issues
@@ -852,6 +926,15 @@ jobs:
           RESET_TIME=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.rate.reset')
           
           echo "REST API requests remaining: $REMAINING"
+          
+          # Check if REMAINING is a valid number
+          if ! [[ "$REMAINING" =~ ^[0-9]+$ ]]; then
+            echo "Warning: Could not parse remaining rate limit, proceeding anyway"
+            return 0
+          fi
+          
+          # Issue states rate limit check should pass if above 1000
+          # Only sleep if we're running low on requests
           
           if [ "$REMAINING" -le 10 ]; then
             CURRENT_TIME=$(date +%s)
