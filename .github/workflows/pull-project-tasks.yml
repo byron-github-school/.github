@@ -11,6 +11,22 @@ on:
         description: 'The name of the GitHub Project to update'
         required: true
         default: ''
+      source_owner:
+        description: 'The owner of the source repository'
+        required: true
+        default: 'im-infomagnus'
+      source_repo:
+        description: 'The name of the source repository'
+        required: true
+        default: 'ms-code-with-engineering-playbook'
+      target_owner:
+        description: 'The owner of the target repository'
+        required: true
+        default: ''
+      target_repo:
+        description: 'The name of the target repository'
+        required: true
+        default: ''
       pat_secret:
         description: 'The name of the secret containing the PAT'
         required: true
@@ -39,6 +55,10 @@ jobs:
       id: fetch_hierarchy
       env:
         GITHUB_TOKEN: ${{ secrets[inputs.pat_secret] }}
+        SOURCE_OWNER: ${{ inputs.source_owner }}
+        SOURCE_REPO: ${{ inputs.source_repo }}
+        TARGET_OWNER: ${{ inputs.target_owner }}
+        TARGET_REPO: ${{ inputs.target_repo }}
       run: |
         # Rate limit checking function with exponential backoff
         check_rate_limit() {
@@ -94,6 +114,12 @@ jobs:
         }
         # Initialize parent-child relationships file
         echo "{}" > parent_child_links.json
+        
+        # Initialize source-to-target issue mapping
+        echo "{}" > source_target_mapping.json
+        
+        # Initialize broken URLs log
+        echo "[]" > broken_urls.json
 
         # Validate JSON after initialization
         if ! jq empty parent_child_links.json; then
@@ -139,7 +165,7 @@ jobs:
           # Use alternative approach with direct curl to control JSON types properly
           ISSUE_ID_RESPONSE=$(curl -s -H "Authorization: bearer $GITHUB_TOKEN" \
             -X POST \
-            -d "{\"query\":\"query { repository(owner: \\\"im-infomagnus\\\", name: \\\"ms-code-with-engineering-playbook\\\") { issue(number: $issue_number_int) { id } } }\"}" \
+            -d "{\"query\":\"query { repository(owner: \\\"$SOURCE_OWNER\\\", name: \\\"$SOURCE_REPO\\\") { issue(number: $issue_number_int) { id } } }\"}" \
             https://api.github.com/graphql 2>$ERROR_OUTPUT)
 
           # Check for curl errors
@@ -234,7 +260,7 @@ jobs:
                   SUBISSUES=""
                   for task_issue_num in $TASK_ISSUE_NUMBERS; do
                     # Create a JSON object for each task issue
-                    TASK_ISSUE_JSON="{\"number\": $task_issue_num, \"title\": \"Task issue #$task_issue_num\", \"url\": \"https://github.com/im-infomagnus/ms-code-with-engineering-playbook/issues/$task_issue_num\"}"
+                    TASK_ISSUE_JSON="{\"number\": $task_issue_num, \"title\": \"Task issue #$task_issue_num\", \"url\": \"https://github.com/$SOURCE_OWNER/$SOURCE_REPO/issues/$task_issue_num\"}"
                     if [ -z "$SUBISSUES" ]; then
                       SUBISSUES="$TASK_ISSUE_JSON"
                     else
@@ -295,7 +321,7 @@ jobs:
             echo -e "$SUBISSUES" | while read -r subissue; do
               if [ -n "$subissue" ]; then
                 SUBISSUE_NUMBER=$(echo "$subissue" | jq -r '.number')
-                SUBISSUE_URL=$(echo "$subissue" | jq -r '.url // "https://github.com/im-infomagnus/ms-code-with-engineering-playbook/issues/\(.number)"')
+                SUBISSUE_URL=$(echo "$subissue" | jq -r --arg source_owner "$SOURCE_OWNER" --arg source_repo "$SOURCE_REPO" '.url // "https://github.com/\($source_owner)/\($source_repo)/issues/\(.number)"')
 
                 echo "Linking sub-issue #$SUBISSUE_NUMBER to parent issue #$issue_number"
 
@@ -321,12 +347,12 @@ jobs:
         echo "[]" > "$TOP_LEVEL_ISSUES"
 
         while : ; do
-          echo "Executing gh api command: gh api \"/repos/im-infomagnus/ms-code-with-engineering-playbook/issues?state=open&per_page=$PER_PAGE&page=$PAGE\""
+          echo "Executing gh api command: gh api \"/repos/$SOURCE_OWNER/$SOURCE_REPO/issues?state=open&per_page=$PER_PAGE&page=$PAGE\""
           
           # Check rate limit before API call
           check_rate_limit
           
-          RESPONSE=$(gh api "repos/im-infomagnus/ms-code-with-engineering-playbook/issues?state=open&per_page=$PER_PAGE&page=$PAGE")
+          RESPONSE=$(gh api "repos/$SOURCE_OWNER/$SOURCE_REPO/issues?state=open&per_page=$PER_PAGE&page=$PAGE")
          
           #echo "Raw response for page $PAGE:"
           #echo "$RESPONSE"
@@ -410,6 +436,10 @@ jobs:
       id: add_issues
       env:
         GITHUB_TOKEN: ${{ secrets[inputs.pat_secret] }}
+        SOURCE_OWNER: ${{ inputs.source_owner }}
+        SOURCE_REPO: ${{ inputs.source_repo }}
+        TARGET_OWNER: ${{ inputs.target_owner }}
+        TARGET_REPO: ${{ inputs.target_repo }}
       run: |
         # Rate limit checking function with exponential backoff
         check_rate_limit() {
@@ -462,6 +492,32 @@ jobs:
           fi
           
           echo "Rate limit check passed. Proceeding with API call..."
+        }
+
+        # Function to transform URLs from source to target repository
+        transform_url() {
+          local original_url="$1"
+          local source_pattern="https://github.com/$SOURCE_OWNER/$SOURCE_REPO"
+          local target_replacement="https://github.com/$TARGET_OWNER/$TARGET_REPO"
+          
+          if [[ "$original_url" == *"$source_pattern"* ]]; then
+            echo "${original_url/$source_pattern/$target_replacement}"
+          else
+            echo "$original_url"
+          fi
+        }
+        
+        # Function to log broken URLs
+        log_broken_url() {
+          local broken_url="$1"
+          local context="$2"
+          echo "Logging broken URL: $broken_url (context: $context)"
+          
+          # Add to broken URLs log
+          jq --arg url "$broken_url" --arg context "$context" \
+            '. += [{"url": $url, "context": $context, "timestamp": now | todate}]' \
+            broken_urls.json > broken_urls_temp.json && \
+            mv broken_urls_temp.json broken_urls.json
         }
 
         PROJECT_NAME="${{ inputs.project_name }}"
@@ -528,7 +584,7 @@ jobs:
             }
           }'
           
-          ISSUE_RESPONSE=$(gh api graphql -f query="$ISSUE_QUERY" -f owner="im-infomagnus" -f repo="ms-code-with-engineering-playbook" -F issueNumber="$parent")
+          ISSUE_RESPONSE=$(gh api graphql -f query="$ISSUE_QUERY" -f owner="$SOURCE_OWNER" -f repo="$SOURCE_REPO" -F issueNumber="$parent")
           ISSUE_ID=$(echo "$ISSUE_RESPONSE" | jq -r '.data.repository.issue.id')
           echo "Issue Global ID: ${ISSUE_ID}"
           
@@ -567,7 +623,7 @@ jobs:
               -H "Authorization: token $GITHUB_TOKEN" \
               -H "Accept: application/vnd.github.v3+json" \
               -d "{\"body\": \"Child of: #$parent\"}" \
-              "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues/$CHILD_NUMBER/comments"
+              "https://api.github.com/repos/$TARGET_OWNER/$TARGET_REPO/issues/$CHILD_NUMBER/comments"
             echo "Child Issue #$CHILD_NUMBER linked to Parent Issue #$parent"
           done
         done
@@ -575,6 +631,10 @@ jobs:
     - name: Update Parent Issues with Child Links
       env:
         GITHUB_TOKEN: ${{ secrets[inputs.pat_secret] }}
+        SOURCE_OWNER: ${{ inputs.source_owner }}
+        SOURCE_REPO: ${{ inputs.source_repo }}
+        TARGET_OWNER: ${{ inputs.target_owner }}
+        TARGET_REPO: ${{ inputs.target_repo }}
       run: |
         # Rate limit checking function with exponential backoff
         check_rate_limit() {
@@ -629,12 +689,35 @@ jobs:
           echo "Rate limit check passed. Proceeding with API call..."
         }
 
+        # Function to transform URLs from source to target repository
+        transform_url() {
+          local original_url="$1"
+          local source_pattern="https://github.com/$SOURCE_OWNER/$SOURCE_REPO"
+          local target_replacement="https://github.com/$TARGET_OWNER/$TARGET_REPO"
+          
+          if [[ "$original_url" == *"$source_pattern"* ]]; then
+            echo "${original_url/$source_pattern/$target_replacement}"
+          else
+            echo "$original_url"
+          fi
+        }
+
         # Log the contents of the JSON file before updating parent issues
         echo "Contents of parent_child_links.json before updating parent issues:"
         cat parent_child_links.json
 
         for parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
           CHILD_LINKS=$(jq -r --arg parent "$parent" '.[$parent][] | "- [Issue #\(.number)](\(.url))"' parent_child_links.json | tr '\n' '\n')
+          
+          # Transform URLs in child links to point to target repository
+          TRANSFORMED_CHILD_LINKS=""
+          while IFS= read -r line; do
+            if [[ -n "$line" ]]; then
+              TRANSFORMED_LINE=$(echo "$line" | sed "s|https://github.com/$SOURCE_OWNER/$SOURCE_REPO|https://github.com/$TARGET_OWNER/$TARGET_REPO|g")
+              TRANSFORMED_CHILD_LINKS="$TRANSFORMED_CHILD_LINKS$TRANSFORMED_LINE"$'\n'
+            fi
+          done <<< "$CHILD_LINKS"
+          
           echo "Updating parent issue #$parent with child links"
           
           # Check rate limit before REST API call
@@ -643,8 +726,19 @@ jobs:
           curl -s -X PATCH \
             -H "Authorization: token $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
-            -d "{\"body\": \"# Linked Child Issues\n$CHILD_LINKS\"}" \
-            "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues/$parent"
+            -d "{\"body\": \"# Linked Child Issues\n$TRANSFORMED_CHILD_LINKS\"}" \
+            "https://api.github.com/repos/$TARGET_OWNER/$TARGET_REPO/issues/$parent"
           echo "Parent Issue #$parent updated with child links."
         done
         echo "All parent issues updated with child links."
+        
+        # Display summary of broken URLs if any
+        if [ -f broken_urls.json ] && [ "$(jq '. | length' broken_urls.json)" -gt 0 ]; then
+          echo "BROKEN URLS DETECTED:"
+          echo "====================="
+          jq -r '.[] | "URL: \(.url) | Context: \(.context) | Time: \(.timestamp)"' broken_urls.json
+          echo "====================="
+          echo "Total broken URLs: $(jq '. | length' broken_urls.json)"
+        else
+          echo "No broken URLs detected."
+        fi

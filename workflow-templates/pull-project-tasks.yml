@@ -7,6 +7,22 @@ on:
         description: 'The name of the GitHub Project to update'
         required: true
         default: ''
+      source_owner:
+        description: 'The owner of the source repository'
+        required: true
+        default: 'im-infomagnus'
+      source_repo:
+        description: 'The name of the source repository'
+        required: true
+        default: 'ms-code-with-engineering-playbook'
+      target_owner:
+        description: 'The owner of the target repository'
+        required: true
+        default: ''
+      target_repo:
+        description: 'The name of the target repository'
+        required: true
+        default: ''
       pat_secret:
         description: 'The name of the secret containing the PAT'
         required: true
@@ -35,9 +51,16 @@ jobs:
       id: fetch_hierarchy
       env:
         GITHUB_TOKEN: ${{ secrets[inputs.pat_secret] }}
+        SOURCE_OWNER: ${{ inputs.source_owner }}
+        SOURCE_REPO: ${{ inputs.source_repo }}
+        TARGET_OWNER: ${{ inputs.target_owner }}
+        TARGET_REPO: ${{ inputs.target_repo }}
       run: |
         # Initialize parent-child relationships file
         echo "{}" > parent_child_links.json
+        
+        # Initialize broken URLs log
+        echo "[]" > broken_urls.json
 
         # Recursive function to fetch sub-issues and build hierarchy
         fetch_subissues() {
@@ -48,7 +71,7 @@ jobs:
 
           # Fetch sub-issues for the current issue
           curl -s -H "Authorization: token $GITHUB_TOKEN" \
-            "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues/$issue_number/sub-issues" > subissues_response.json
+            "https://api.github.com/repos/$SOURCE_OWNER/$SOURCE_REPO/issues/$issue_number/sub-issues" > subissues_response.json
 
           echo "Raw response for sub-issues of issue #$issue_number:"
           cat subissues_response.json
@@ -92,7 +115,7 @@ jobs:
         }
         # Fetch all top-level issues
         TOP_LEVEL_ISSUES=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-          "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues?state=open" | jq -c '.[]')
+          "https://api.github.com/repos/$SOURCE_OWNER/$SOURCE_REPO/issues?state=open" | jq -c '.[]')
 
         echo "Top-level issues:"
         echo "$TOP_LEVEL_ISSUES" | jq -r '.number'
@@ -114,6 +137,10 @@ jobs:
       id: add_issues
       env:
         GITHUB_TOKEN: ${{ secrets[inputs.pat_secret] }}
+        SOURCE_OWNER: ${{ inputs.source_owner }}
+        SOURCE_REPO: ${{ inputs.source_repo }}
+        TARGET_OWNER: ${{ inputs.target_owner }}
+        TARGET_REPO: ${{ inputs.target_repo }}
       run: |
         PROJECT_NAME="${{ inputs.project_name }}"
         
@@ -121,7 +148,7 @@ jobs:
         PROJECT_ID=$(curl -s \
           -H "Authorization: token $GITHUB_TOKEN" \
           -H "Accept: application/vnd.github.inertia-preview+json" \
-          "https://api.github.com/orgs/im-infomagnus/projects" | \
+          "https://api.github.com/orgs/$TARGET_OWNER/projects" | \
           jq -r ".[] | select(.name==\"$PROJECT_NAME\") | .id")
 
         if [ -z "$PROJECT_ID" ]; then
@@ -142,7 +169,7 @@ jobs:
             -H "Authorization: token $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.inertia-preview+json" \
             -d "{\"content_id\": $(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-              "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues/$parent" | jq -r '.id'), \"content_type\": \"Issue\"}" \
+              "https://api.github.com/repos/$SOURCE_OWNER/$SOURCE_REPO/issues/$parent" | jq -r '.id'), \"content_type\": \"Issue\"}" \
             "https://api.github.com/projects/$PROJECT_ID/columns/1/cards"
           echo "Issue #$parent added to the project"
         done
@@ -154,13 +181,13 @@ jobs:
         # Link child issues to their parents
         for parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
           for child in $(jq -c --arg parent "$parent" '.[$parent][]' parent_child_links.json); do
-            CHILD_NUMBER=$(echo $child | jq -r '.[0]')
+            CHILD_NUMBER=$(echo $child | jq -r '.number')
             echo "Linking child issue #$CHILD_NUMBER to parent issue #$parent"
             curl -s -X POST \
               -H "Authorization: token $GITHUB_TOKEN" \
               -H "Accept: application/vnd.github.v3+json" \
               -d "{\"body\": \"Child of: #$parent\"}" \
-              "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues/$CHILD_NUMBER/comments"
+              "https://api.github.com/repos/$TARGET_OWNER/$TARGET_REPO/issues/$CHILD_NUMBER/comments"
             echo "Child Issue #$CHILD_NUMBER linked to Parent Issue #$parent"
           done
         done
@@ -168,19 +195,38 @@ jobs:
     - name: Update Parent Issues with Child Links
       env:
         GITHUB_TOKEN: ${{ secrets[inputs.pat_secret] }}
+        SOURCE_OWNER: ${{ inputs.source_owner }}
+        SOURCE_REPO: ${{ inputs.source_repo }}
+        TARGET_OWNER: ${{ inputs.target_owner }}
+        TARGET_REPO: ${{ inputs.target_repo }}
       run: |
         # Log the contents of the JSON file before updating parent issues
         echo "Contents of parent_child_links.json before updating parent issues:"
         cat parent_child_links.json
 
         for parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
-          CHILD_LINKS=$(jq -r --arg parent "$parent" '.[$parent][] | "- [Issue #\(.[])](\(.[]))"' parent_child_links.json | tr '\n' '\n')
+          CHILD_LINKS=$(jq -r --arg parent "$parent" '.[$parent][] | "- [Issue #\(.number)](\(.url))"' parent_child_links.json | tr '\n' '\n')
+          
+          # Transform URLs to point to target repository
+          TRANSFORMED_CHILD_LINKS=$(echo "$CHILD_LINKS" | sed "s|https://github.com/$SOURCE_OWNER/$SOURCE_REPO|https://github.com/$TARGET_OWNER/$TARGET_REPO|g")
+          
           echo "Updating parent issue #$parent with child links"
           curl -s -X PATCH \
             -H "Authorization: token $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
-            -d "{\"body\": \"# Linked Child Issues\n$CHILD_LINKS\"}" \
-            "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues/$parent"
+            -d "{\"body\": \"# Linked Child Issues\n$TRANSFORMED_CHILD_LINKS\"}" \
+            "https://api.github.com/repos/$TARGET_OWNER/$TARGET_REPO/issues/$parent"
           echo "Parent Issue #$parent updated with child links."
         done
         echo "All parent issues updated with child links."
+        
+        # Display summary of broken URLs if any
+        if [ -f broken_urls.json ] && [ "$(jq '. | length' broken_urls.json)" -gt 0 ]; then
+          echo "BROKEN URLS DETECTED:"
+          echo "====================="
+          jq -r '.[] | "URL: \(.url) | Context: \(.context) | Time: \(.timestamp)"' broken_urls.json
+          echo "====================="
+          echo "Total broken URLs: $(jq '. | length' broken_urls.json)"
+        else
+          echo "No broken URLs detected."
+        fi
