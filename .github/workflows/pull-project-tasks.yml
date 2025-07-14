@@ -721,6 +721,19 @@ jobs:
             echo "$original_url"
           fi
         }
+        
+        # Function to log broken URLs
+        log_broken_url() {
+          local broken_url="$1"
+          local context="$2"
+          echo "Logging broken URL: $broken_url (context: $context)"
+          
+          # Add to broken URLs log
+          jq --arg url "$broken_url" --arg context "$context" \
+            '. += [{"url": $url, "context": $context, "timestamp": now | todate}]' \
+            broken_urls.json > broken_urls_temp.json && \
+            mv broken_urls_temp.json broken_urls.json
+        }
 
         # Log the contents of the JSON file before updating parent issues
         echo "Contents of parent_child_links.json before updating parent issues:"
