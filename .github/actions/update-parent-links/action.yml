@@ -1,0 +1,106 @@
+name: 'Update Parent Issues with Child Links'
+description: 'Updates parent issues with links to their child issues'
+inputs:
+  github-token:
+    description: 'GitHub token for API access'
+    required: true
+  source-owner:
+    description: 'Owner of the source repository'
+    required: true
+  source-repo:
+    description: 'Name of the source repository'
+    required: true
+  target-owner:
+    description: 'Owner of the target repository'
+    required: true
+  target-repo:
+    description: 'Name of the target repository'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Update Parent Issues with Child Links
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        SOURCE_OWNER: ${{ inputs.source-owner }}
+        SOURCE_REPO: ${{ inputs.source-repo }}
+        TARGET_OWNER: ${{ inputs.target-owner }}
+        TARGET_REPO: ${{ inputs.target-repo }}
+      run: |
+        # Source common functions
+        source ${{ github.action_path }}/../shared/scripts/common-functions.sh
+
+        # Log the contents of the JSON file before updating parent issues
+        echo "Contents of parent_child_links.json before updating parent issues:"
+        cat parent_child_links.json
+
+        for source_parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
+          # Get the target parent issue number
+          TARGET_PARENT=$(jq -r --arg source "$source_parent" '.[$source] // empty' source_target_mapping.json)
+          
+          if [ -z "$TARGET_PARENT" ] || [ "$TARGET_PARENT" = "null" ]; then
+            echo "Warning: No target mapping found for source parent issue #$source_parent"
+            continue
+          fi
+          
+          # Build child links using target issue numbers
+          CHILD_LINKS=""
+          for child in $(jq -c --arg parent "$source_parent" '.[$parent][]' parent_child_links.json); do
+            SOURCE_CHILD_NUMBER=$(echo "$child" | jq -r '.number')
+            TARGET_CHILD=$(jq -r --arg source "$SOURCE_CHILD_NUMBER" '.[$source] // empty' source_target_mapping.json)
+            
+            if [ -n "$TARGET_CHILD" ] && [ "$TARGET_CHILD" != "null" ]; then
+              CHILD_LINK="- [Issue #$TARGET_CHILD](https://github.com/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_CHILD)"
+              if [ -z "$CHILD_LINKS" ]; then
+                CHILD_LINKS="$CHILD_LINK"
+              else
+                CHILD_LINKS="$CHILD_LINKS"$'\n'"$CHILD_LINK"
+              fi
+            else
+              echo "Warning: No target mapping found for child issue #$SOURCE_CHILD_NUMBER"
+            fi
+          done
+          
+          if [ -z "$CHILD_LINKS" ]; then
+            echo "No child links to add for parent issue #$TARGET_PARENT"
+            continue
+          fi
+          
+          echo "Updating target parent issue #$TARGET_PARENT with child links"
+          
+          # Check if issue exists in target repository before updating
+          # Check rate limit before REST API call
+          check_rate_limit
+          
+          ISSUE_CHECK_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/repos/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_PARENT")
+          
+          if [ "$ISSUE_CHECK_RESPONSE" = "200" ]; then
+            # Check rate limit before REST API call
+            check_rate_limit
+            
+            PATCH_RESPONSE=$(curl -s -X PATCH \
+              -H "Authorization: token $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              -d "{\"body\": \"# Linked Child Issues\n$CHILD_LINKS\"}" \
+              "https://api.github.com/repos/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_PARENT")
+            
+            # Check if the update was successful
+            if echo "$PATCH_RESPONSE" | jq -e '.number' >/dev/null 2>&1; then
+              echo "Parent Issue #$TARGET_PARENT updated with child links."
+            else
+              echo "Warning: Failed to update parent issue #$TARGET_PARENT"
+              log_broken_url "https://github.com/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_PARENT" "Failed to update parent issue"
+            fi
+          else
+            echo "Warning: Parent issue #$TARGET_PARENT does not exist in target repository"
+            log_broken_url "https://github.com/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_PARENT" "Parent issue does not exist in target repository (HTTP $ISSUE_CHECK_RESPONSE)"
+          fi
+        done
+        echo "All parent issues updated with child links."
+        
+        # Display summary of broken URLs
+        display_broken_urls_summary

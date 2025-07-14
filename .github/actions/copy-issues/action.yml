@@ -1,0 +1,114 @@
+name: 'Copy Issues to Target Repository'
+description: 'Copies issues from source repository to target repository and tracks mapping'
+inputs:
+  github-token:
+    description: 'GitHub token for API access'
+    required: true
+  source-owner:
+    description: 'Owner of the source repository'
+    required: true
+  source-repo:
+    description: 'Name of the source repository'
+    required: true
+  target-owner:
+    description: 'Owner of the target repository'
+    required: true
+  target-repo:
+    description: 'Name of the target repository'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Copy Issues to Target Repository and Track Mapping
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        SOURCE_OWNER: ${{ inputs.source-owner }}
+        SOURCE_REPO: ${{ inputs.source-repo }}
+        TARGET_OWNER: ${{ inputs.target-owner }}
+        TARGET_REPO: ${{ inputs.target-repo }}
+      run: |
+        # Source common functions
+        source ${{ github.action_path }}/../shared/scripts/common-functions.sh
+
+        echo "=== Copying Issues from Source to Target Repository ==="
+        
+        # Get all unique issue numbers from parent_child_links.json
+        ALL_ISSUES=$(jq -r 'keys_unsorted[]' parent_child_links.json)
+        CHILD_ISSUES=$(jq -r '.[] | .[].number' parent_child_links.json)
+        
+        # Combine parent and child issues, remove duplicates
+        ALL_UNIQUE_ISSUES=$(echo -e "$ALL_ISSUES\n$CHILD_ISSUES" | sort -n | uniq)
+        
+        echo "Issues to copy: $ALL_UNIQUE_ISSUES"
+        
+        # Copy each issue from source to target repository
+        for source_issue_number in $ALL_UNIQUE_ISSUES; do
+          echo "Copying issue #$source_issue_number from $SOURCE_OWNER/$SOURCE_REPO to $TARGET_OWNER/$TARGET_REPO"
+          
+          # Check rate limit before fetching source issue
+          check_rate_limit
+          
+          # Fetch the source issue details
+          SOURCE_ISSUE_RESPONSE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/repos/$SOURCE_OWNER/$SOURCE_REPO/issues/$source_issue_number")
+          
+          # Check if source issue exists
+          if ! echo "$SOURCE_ISSUE_RESPONSE" | jq -e '.number' >/dev/null 2>&1; then
+            echo "Warning: Source issue #$source_issue_number not found or invalid response"
+            log_broken_url "https://github.com/$SOURCE_OWNER/$SOURCE_REPO/issues/$source_issue_number" "Source issue not found"
+            continue
+          fi
+          
+          # Extract issue details
+          TITLE=$(echo "$SOURCE_ISSUE_RESPONSE" | jq -r '.title')
+          BODY=$(echo "$SOURCE_ISSUE_RESPONSE" | jq -r '.body // ""')
+          LABELS=$(echo "$SOURCE_ISSUE_RESPONSE" | jq -r '.labels[].name' | jq -Rs 'split("\n") | map(select(length > 0))')
+          
+          # Transform URLs in the body to point to target repository
+          TRANSFORMED_BODY=$(echo "$BODY" | sed "s|https://github.com/$SOURCE_OWNER/$SOURCE_REPO|https://github.com/$TARGET_OWNER/$TARGET_REPO|g")
+          
+          # Add a note about the source
+          TRANSFORMED_BODY="$TRANSFORMED_BODY"$'\n\n'"________________________________________"$'\n'"*Copied from: https://github.com/$SOURCE_OWNER/$SOURCE_REPO/issues/$source_issue_number*"
+          
+          echo "Creating new issue in target repository..."
+          echo "Title: $TITLE"
+          
+          # Check rate limit before creating target issue
+          check_rate_limit
+          
+          # Create the issue in target repository
+          CREATE_RESPONSE=$(curl -s -X POST \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -d "$(jq -n \
+              --arg title "$TITLE" \
+              --arg body "$TRANSFORMED_BODY" \
+              --argjson labels "$LABELS" \
+              '{"title": $title, "body": $body, "labels": $labels}')" \
+            "https://api.github.com/repos/$TARGET_OWNER/$TARGET_REPO/issues")
+          
+          # Check if issue was created successfully
+          if echo "$CREATE_RESPONSE" | jq -e '.number' >/dev/null 2>&1; then
+            TARGET_ISSUE_NUMBER=$(echo "$CREATE_RESPONSE" | jq -r '.number')
+            echo "Successfully created issue #$TARGET_ISSUE_NUMBER in target repository"
+            
+            # Update source-to-target mapping
+            jq --arg source "$source_issue_number" \
+               --arg target "$TARGET_ISSUE_NUMBER" \
+               '.[$source] = $target' \
+               source_target_mapping.json > source_target_mapping_temp.json && \
+               mv source_target_mapping_temp.json source_target_mapping.json
+            
+            echo "Mapped source issue #$source_issue_number -> target issue #$TARGET_ISSUE_NUMBER"
+          else
+            echo "Error: Failed to create issue in target repository"
+            echo "Response: $CREATE_RESPONSE"
+            log_broken_url "https://github.com/$TARGET_OWNER/$TARGET_REPO" "Failed to create issue from source #$source_issue_number"
+          fi
+        done
+        
+        echo "=== Issue Copying Complete ==="
+        echo "Source-to-target mapping:"
+        cat source_target_mapping.json
