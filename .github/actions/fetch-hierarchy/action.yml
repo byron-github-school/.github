@@ -1,0 +1,319 @@
+name: 'Fetch Issues and Build Hierarchy'
+description: 'Fetches issues from source repository and builds parent-child hierarchy'
+inputs:
+  github-token:
+    description: 'GitHub token for API access'
+    required: true
+  source-owner:
+    description: 'Owner of the source repository'
+    required: true
+  source-repo:
+    description: 'Name of the source repository'
+    required: true
+  target-owner:
+    description: 'Owner of the target repository'
+    required: true
+  target-repo:
+    description: 'Name of the target repository'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Fetch Issues and Build Full Hierarchy
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        SOURCE_OWNER: ${{ inputs.source-owner }}
+        SOURCE_REPO: ${{ inputs.source-repo }}
+        TARGET_OWNER: ${{ inputs.target-owner }}
+        TARGET_REPO: ${{ inputs.target-repo }}
+      run: |
+        # Source common functions
+        source ${{ github.action_path }}/../shared/scripts/common-functions.sh
+        
+        # Initialize JSON files
+        initialize_json_files
+        
+        # Validate JSON after initialization
+        if ! jq empty parent_child_links.json; then
+          echo "Error: parent_child_links.json contains invalid JSON. Reinitializing..."
+          echo "{}" > parent_child_links.json
+        fi
+
+        # Recursive function to fetch sub-issues and build hierarchy
+        fetch_subissues() {
+          local issue_number=$1
+          local parent_number=$2
+
+          set +e  # Disable immediate exit on error
+          echo "---------------------------------------------------------------------------"
+          echo "Processing issue #$issue_number"
+
+          # Fetch sub-issues for the current issue
+          echo "Executing gh api graphql to fetch sub-issues for issue #$issue_number"
+                              
+          # Check rate limit before making API call
+          check_rate_limit
+          
+          # Fetch the Global ID
+          GET_ISSUE_ID_QUERY="query GetIssueId(\$owner: String!, \$repo: String!, \$issue_number: Int!) { repository(owner: \$owner, name: \$repo) { issue(number: \$issue_number) { id } } }"
+          echo "GraphQL query to fetch issue ID: $GET_ISSUE_ID_QUERY"
+
+          # Validate that issue_number is a valid integer
+          if ! [[ "$issue_number" =~ ^[0-9]+$ ]]; then
+            echo "Error: issue_number '$issue_number' is not a valid integer"
+            return 1
+          fi
+
+          # Create a temporary file to capture error output
+          ERROR_OUTPUT=$(mktemp)
+
+          # Convert issue_number to a clean integer
+          issue_number_int=$((10#$issue_number))  # Force base-10 interpretation
+          echo "Using integer value for issue_number: $issue_number_int"
+
+          # Check rate limit before direct curl GraphQL call
+          check_rate_limit
+
+          # Use alternative approach with direct curl to control JSON types properly
+          ISSUE_ID_RESPONSE=$(curl -s -H "Authorization: bearer $GITHUB_TOKEN" \
+            -X POST \
+            -d "{\"query\":\"query { repository(owner: \\\"$SOURCE_OWNER\\\", name: \\\"$SOURCE_REPO\\\") { issue(number: $issue_number_int) { id } } }\"}" \
+            https://api.github.com/graphql 2>$ERROR_OUTPUT)
+
+          # Check for curl errors
+          if [ $? -ne 0 ]; then
+            echo "Error executing GraphQL query: $(cat $ERROR_OUTPUT)"
+            return 1
+          fi
+
+          # Check for GraphQL errors in the response
+          if echo "$ISSUE_ID_RESPONSE" | jq -e '.errors' >/dev/null 2>&1; then
+            echo "GraphQL query returned errors:"
+            echo "$ISSUE_ID_RESPONSE" | jq '.errors'
+            return 1
+          fi
+
+          echo "GraphQL query executed successfully."
+          echo "Raw response: $ISSUE_ID_RESPONSE"
+
+          ISSUE_ID=$(echo "$ISSUE_ID_RESPONSE" | jq -r '.data.repository.issue.id')
+
+          echo "Issue ID: $ISSUE_ID"
+
+          # Try multiple GraphQL queries to find sub-issues
+          echo "Executing GraphQL queries to fetch sub-issues for issue #$issue_number"
+          
+          # First try the original subIssues query
+          QUERY1="query(\$issue_id: ID!) { node(id: \$issue_id) { ... on Issue { id number subIssues(first: 100) { nodes { id number title url } } } } }"
+          echo "Trying subIssues field query: $QUERY1"
+          
+          # Check rate limit before GraphQL query
+          check_rate_limit
+          
+          set +e  # Don't exit on error
+          gh api graphql -f query="$QUERY1" -f issue_id="$ISSUE_ID" > subissues_response.json 2>/dev/null
+          QUERY1_SUCCESS=$?
+          set -e
+          
+          SUBISSUES=""
+          if [ $QUERY1_SUCCESS -eq 0 ] && ! jq -e '.errors' subissues_response.json > /dev/null 2>&1; then
+            echo "subIssues query successful"
+            if jq -e '.data.node.subIssues.nodes' subissues_response.json > /dev/null 2>&1; then
+              SUBISSUES=$(jq -c '.data.node.subIssues.nodes[]' subissues_response.json)
+              if [ -n "$SUBISSUES" ]; then
+                echo "Found sub-issues using subIssues field for issue #$issue_number:"
+                echo "$SUBISSUES" | jq -r '.number'
+              fi
+            fi
+          else
+            echo "subIssues query failed or returned errors, trying alternative approach"
+          fi
+          
+          # If subIssues didn't work, try timeline items and body parsing
+          if [ -z "$SUBISSUES" ]; then
+            QUERY2="query(\$issue_id: ID!) { node(id: \$issue_id) { ... on Issue { id number body timelineItems(first: 100, itemTypes: [CROSS_REFERENCED_EVENT]) { nodes { ... on CrossReferencedEvent { source { ... on Issue { id number title url } } } } } } } }"
+            echo "Trying timeline items query: $QUERY2"
+            
+            # Check rate limit before GraphQL query
+            check_rate_limit
+            
+            gh api graphql -f query="$QUERY2" -f issue_id="$ISSUE_ID" > subissues_response.json
+            
+            # Check if the response contains any errors
+            if jq -e '.errors' subissues_response.json > /dev/null 2>&1; then
+              echo "GraphQL query returned errors:"
+              jq '.errors' subissues_response.json
+              return 1
+            fi
+
+            echo "Raw response for alternative query:"
+            cat subissues_response.json
+            
+            # Try cross-referenced issues from timeline
+            if jq -e '.data.node.timelineItems.nodes' subissues_response.json > /dev/null 2>&1; then
+              TIMELINE_ISSUES=$(jq -c '.data.node.timelineItems.nodes[] | select(.source.number != null) | .source' subissues_response.json)
+              if [ -n "$TIMELINE_ISSUES" ]; then
+                echo "Found cross-referenced issues for issue #$issue_number:"
+                echo "$TIMELINE_ISSUES" | jq -r '.number'
+                SUBISSUES="$TIMELINE_ISSUES"
+              fi
+            fi
+            
+            # If still no sub-issues, parse task list from body
+            if [ -z "$SUBISSUES" ]; then
+              ISSUE_BODY=$(jq -r '.data.node.body // ""' subissues_response.json)
+              if [[ "$ISSUE_BODY" =~ \#[0-9]+ ]]; then
+                echo "Found issue references in body, parsing task list..."
+                # Extract issue numbers from task list items (- [ ] or - [x] #123)
+                TASK_ISSUE_NUMBERS=$(echo "$ISSUE_BODY" | grep -oE -- '- \[[x ]\].*#[0-9]+' | grep -oE '#[0-9]+' | sed 's/#//' | sort -u)
+                if [ -n "$TASK_ISSUE_NUMBERS" ]; then
+                  echo "Found task list sub-issues: $TASK_ISSUE_NUMBERS"
+                  # Convert to JSON format for consistency
+                  SUBISSUES=""
+                  for task_issue_num in $TASK_ISSUE_NUMBERS; do
+                    # Create a JSON object for each task issue
+                    TASK_ISSUE_JSON="{\"number\": $task_issue_num, \"title\": \"Task issue #$task_issue_num\", \"url\": \"https://github.com/$SOURCE_OWNER/$SOURCE_REPO/issues/$task_issue_num\"}"
+                    if [ -z "$SUBISSUES" ]; then
+                      SUBISSUES="$TASK_ISSUE_JSON"
+                    else
+                      SUBISSUES="$SUBISSUES\n$TASK_ISSUE_JSON"
+                    fi
+                  done
+                fi
+              fi
+            fi
+          fi
+          
+          if [ -z "$SUBISSUES" ]; then
+            echo "No sub-issues found for issue #$issue_number using any method"
+          else
+            echo "Total sub-issues found for issue #$issue_number:"
+            if command -v wc >/dev/null 2>&1; then
+              SUBISSUE_COUNT=$(echo -e "$SUBISSUES" | wc -l)
+              echo "Count: $SUBISSUE_COUNT"
+            fi
+            echo "Sub-issue details:"
+            echo -e "$SUBISSUES" | jq -r '.number' 2>/dev/null || echo -e "$SUBISSUES"
+          fi
+
+          # Process sub-issues if any were found
+          if [ -n "$SUBISSUES" ]; then
+            # Validate JSON before processing
+            if ! jq empty parent_child_links.json; then
+              echo "Error: parent_child_links.json contains invalid JSON."
+              exit 1
+            fi
+
+            # Add the current issue to the hierarchy if not already present
+            if ! jq -e --arg issue "$issue_number" 'has($issue)' parent_child_links.json > /dev/null; then
+              jq --arg issue "$issue_number" '. + {($issue): []}' parent_child_links.json > temp.json \
+              && mv temp.json parent_child_links.json
+            fi
+
+            # Link sub-issues to the current issue
+            echo -e "$SUBISSUES" | while read -r subissue; do
+              if [ -n "$subissue" ]; then
+                SUBISSUE_NUMBER=$(echo "$subissue" | jq -r '.number')
+                SUBISSUE_URL=$(echo "$subissue" | jq -r --arg source_owner "$SOURCE_OWNER" --arg source_repo "$SOURCE_REPO" '.url // "https://github.com/\($source_owner)/\($source_repo)/issues/\(.number)"')
+
+                echo "Linking sub-issue #$SUBISSUE_NUMBER to parent issue #$issue_number"
+
+                jq --arg parent "$issue_number" \
+                  --arg number "$SUBISSUE_NUMBER" \
+                  --arg url "$SUBISSUE_URL" \
+                  '.[$parent] += [{"number": $number, "url": $url}]' \
+                  parent_child_links.json > temp.json \
+                && mv temp.json parent_child_links.json
+              fi
+            done
+
+            echo "Contents of parent_child_links.json after processing issue #$issue_number:"
+            cat parent_child_links.json
+          fi
+        }
+        #end function
+
+        TOP_LEVEL_ISSUES=$(mktemp)
+        PAGE=1
+        PER_PAGE=100
+
+        echo "[]" > "$TOP_LEVEL_ISSUES"
+
+        while : ; do
+          echo "Executing gh api command: gh api \"/repos/$SOURCE_OWNER/$SOURCE_REPO/issues?state=open&per_page=$PER_PAGE&page=$PAGE\""
+          
+          # Check rate limit before API call
+          check_rate_limit
+          
+          RESPONSE=$(gh api "repos/$SOURCE_OWNER/$SOURCE_REPO/issues?state=open&per_page=$PER_PAGE&page=$PAGE")
+         
+          # Check if response is empty
+          if [ -z "$RESPONSE" ]; then
+            echo "Warning: Empty response from GitHub API. Assuming end of pages."
+            break
+          fi
+
+          # Check if response is valid JSON
+          if ! echo "$RESPONSE" | jq empty > /dev/null; then
+            echo "Warning: Invalid JSON response from GitHub API. Assuming end of pages. Response was:"
+            echo "$RESPONSE"
+            break
+          fi
+
+          # Check if response is an empty array
+          if [ "$(echo "$RESPONSE" | jq '. | length')" -eq 0 ]; then
+            echo "No issues found on this page. Assuming end of pages."
+            break
+          fi
+
+          # Append current page results to TOP_LEVEL_ISSUES
+          jq -s '.[0] + .[1]' "$TOP_LEVEL_ISSUES" <(echo "$RESPONSE") > "${TOP_LEVEL_ISSUES}.tmp" && mv "${TOP_LEVEL_ISSUES}.tmp" "$TOP_LEVEL_ISSUES"
+
+          PAGE=$((PAGE + 1))
+        done
+
+        echo "Top-level issues:"
+        jq -r '.[].number' "$TOP_LEVEL_ISSUES"
+        echo "Total top-level issues found: $(jq '. | length' "$TOP_LEVEL_ISSUES")"
+
+        # Log the contents of the JSON file before parsing
+        echo "Contents of parent_child_links.json before processing:"
+        cat parent_child_links.json
+
+        # Process each top-level issue
+        jq -c '.[]' "$TOP_LEVEL_ISSUES" | while read -r issue; do
+          # Check if $issue is empty or null
+          if [ -z "$issue" ] || [ "$issue" == "null" ]; then
+            echo "Warning: Skipping empty or null issue."
+            continue
+          fi
+
+          # Check if $issue is valid JSON
+          if ! echo "$issue" | jq empty > /dev/null; then
+            echo "Warning: Invalid JSON for issue: $issue"
+            continue
+          fi
+
+          # Check if the JSON object has a "number" field
+          if echo "$issue" | jq -e 'has("number")' > /dev/null; then
+            ISSUE_NUMBER=$(echo "$issue" | jq -r '.number')
+          else
+            echo "Warning: Issue does not have a 'number' field: $issue"
+            continue
+          fi
+
+          # Check if ISSUE_NUMBER is empty
+          if [ -z "$ISSUE_NUMBER" ]; then
+            echo "Warning: Issue number is empty for issue: $issue"
+            continue
+          fi
+
+          echo "Processing top-level issue #$ISSUE_NUMBER"
+          fetch_subissues "$ISSUE_NUMBER"
+        done
+
+        echo "Full parent-child hierarchy constructed and saved to parent_child_links.json."
+        echo "Contents of parent_child_links.json after processing all issues:"
+        cat parent_child_links.json
