@@ -66,8 +66,9 @@ runs:
           BODY=$(echo "$SOURCE_ISSUE_RESPONSE" | jq -r '.body // ""')
           LABELS=$(echo "$SOURCE_ISSUE_RESPONSE" | jq -r '.labels[].name' | jq -Rs 'split("\n") | map(select(length > 0))')
           
-          # Transform URLs in the body to point to target repository
-          TRANSFORMED_BODY=$(echo "$BODY" | sed "s|https://github.com/$SOURCE_OWNER/$SOURCE_REPO|https://github.com/$TARGET_OWNER/$TARGET_REPO|g")
+          # Transform only issue URLs in the body to point to target repository
+          # Preserve references to markdown documents and other files in the source repository
+          TRANSFORMED_BODY=$(echo "$BODY" | sed "s|https://github.com/$SOURCE_OWNER/$SOURCE_REPO/issues/|https://github.com/$TARGET_OWNER/$TARGET_REPO/issues/|g")
           
           # Add a note about the source
           TRANSFORMED_BODY="$TRANSFORMED_BODY"$'\n\n'"________________________________________"$'\n'"*Copied from: https://github.com/$SOURCE_OWNER/$SOURCE_REPO/issues/$source_issue_number*"

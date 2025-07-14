@@ -79,18 +79,45 @@ runs:
             "https://api.github.com/repos/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_PARENT")
           
           if [ "$ISSUE_CHECK_RESPONSE" = "200" ]; then
+            # Get the current issue body before updating
+            # Check rate limit before REST API call
+            check_rate_limit
+            
+            CURRENT_ISSUE_RESPONSE=$(curl -s \
+              -H "Authorization: token $GITHUB_TOKEN" \
+              "https://api.github.com/repos/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_PARENT")
+            
+            # Extract current body
+            CURRENT_BODY=$(echo "$CURRENT_ISSUE_RESPONSE" | jq -r '.body // ""')
+            
+            # Check if child links section already exists
+            if echo "$CURRENT_BODY" | grep -q "# Linked Child Issues"; then
+              echo "Child links section already exists in issue #$TARGET_PARENT, updating it"
+              # Replace existing child links section
+              UPDATED_BODY=$(echo "$CURRENT_BODY" | sed '/# Linked Child Issues/,$d')
+              UPDATED_BODY="$UPDATED_BODY"$'\n\n'"# Linked Child Issues"$'\n'"$CHILD_LINKS"
+            else
+              echo "Appending child links to existing body of issue #$TARGET_PARENT"
+              # Append child links to existing body
+              if [ -n "$CURRENT_BODY" ] && [ "$CURRENT_BODY" != "null" ]; then
+                UPDATED_BODY="$CURRENT_BODY"$'\n\n'"# Linked Child Issues"$'\n'"$CHILD_LINKS"
+              else
+                UPDATED_BODY="# Linked Child Issues"$'\n'"$CHILD_LINKS"
+              fi
+            fi
+            
             # Check rate limit before REST API call
             check_rate_limit
             
             PATCH_RESPONSE=$(curl -s -X PATCH \
               -H "Authorization: token $GITHUB_TOKEN" \
               -H "Accept: application/vnd.github.v3+json" \
-              -d "{\"body\": \"# Linked Child Issues\n$CHILD_LINKS\"}" \
+              -d "$(jq -n --arg body "$UPDATED_BODY" '{"body": $body}')" \
               "https://api.github.com/repos/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_PARENT")
             
             # Check if the update was successful
             if echo "$PATCH_RESPONSE" | jq -e '.number' >/dev/null 2>&1; then
-              echo "Parent Issue #$TARGET_PARENT updated with child links."
+              echo "Parent Issue #$TARGET_PARENT updated with child links while preserving original content."
             else
               echo "Warning: Failed to update parent issue #$TARGET_PARENT"
               log_broken_url "https://github.com/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_PARENT" "Failed to update parent issue"
