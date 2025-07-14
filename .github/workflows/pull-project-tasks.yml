@@ -133,6 +133,9 @@ jobs:
           issue_number_int=$((10#$issue_number))  # Force base-10 interpretation
           echo "Using integer value for issue_number: $issue_number_int"
 
+          # Check rate limit before direct curl GraphQL call
+          check_rate_limit
+
           # Use alternative approach with direct curl to control JSON types properly
           ISSUE_ID_RESPONSE=$(curl -s -H "Authorization: bearer $GITHUB_TOKEN" \
             -X POST \
