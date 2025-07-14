@@ -40,6 +40,58 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets[inputs.pat_secret] }}
       run: |
+        # Rate limit checking function with exponential backoff
+        check_rate_limit() {
+          echo "Checking GitHub API rate limit..."
+          
+          # Get current rate limit status
+          RATE_LIMIT_RESPONSE=$(gh api /rate_limit)
+          REMAINING=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.rate.remaining')
+          LIMIT=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.rate.limit')
+          RESET_TIME=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.rate.reset')
+          
+          echo "API Rate Limit Status: $REMAINING remaining out of $LIMIT (resets at $(date -d @$RESET_TIME))"
+          
+          # Check if we're approaching the limit (less than 50 remaining)
+          if [ "$REMAINING" -lt 50 ]; then
+            echo "WARNING: API rate limit is low ($REMAINING remaining). Initiating backoff strategy..."
+            
+            local iteration=1
+            local wait_time=30
+            local max_iterations=10
+            
+            while [ $iteration -le $max_iterations ]; do
+              echo "Backoff iteration $iteration/$max_iterations: waiting ${wait_time} seconds..."
+              sleep $wait_time
+              
+              # Check rate limit again
+              RATE_LIMIT_RESPONSE=$(gh api /rate_limit)
+              NEW_REMAINING=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.rate.remaining')
+              
+              echo "Rate limit after wait: $NEW_REMAINING remaining"
+              
+              # Check if the limit increased by more than 100
+              local increase=$((NEW_REMAINING - REMAINING))
+              if [ $increase -gt 100 ]; then
+                echo "Rate limit increased by $increase. Continuing with API calls..."
+                return 0
+              fi
+              
+              # If this is the last iteration and limit hasn't increased sufficiently
+              if [ $iteration -eq $max_iterations ]; then
+                echo "ERROR: Available API limit ceiling has been reached"
+                exit 1
+              fi
+              
+              # Double the wait time for next iteration
+              wait_time=$((wait_time * 2))
+              iteration=$((iteration + 1))
+              REMAINING=$NEW_REMAINING
+            done
+          fi
+          
+          echo "Rate limit check passed. Proceeding with API call..."
+        }
         # Initialize parent-child relationships file
         echo "{}" > parent_child_links.json
 
@@ -61,6 +113,9 @@ jobs:
           # Fetch sub-issues for the current issue
           echo "Executing gh api graphql to fetch sub-issues for issue #$issue_number"
                               
+          # Check rate limit before making API call
+          check_rate_limit
+          
           # Fetch the Global ID
           GET_ISSUE_ID_QUERY="query GetIssueId(\$owner: String!, \$repo: String!, \$issue_number: Int!) { repository(owner: \$owner, name: \$repo) { issue(number: \$issue_number) { id } } }"
           echo "GraphQL query to fetch issue ID: $GET_ISSUE_ID_QUERY"
@@ -77,6 +132,9 @@ jobs:
           # Convert issue_number to a clean integer
           issue_number_int=$((10#$issue_number))  # Force base-10 interpretation
           echo "Using integer value for issue_number: $issue_number_int"
+
+          # Check rate limit before direct curl GraphQL call
+          check_rate_limit
 
           # Use alternative approach with direct curl to control JSON types properly
           ISSUE_ID_RESPONSE=$(curl -s -H "Authorization: bearer $GITHUB_TOKEN" \
@@ -111,6 +169,9 @@ jobs:
           QUERY1="query(\$issue_id: ID!) { node(id: \$issue_id) { ... on Issue { id number subIssues(first: 100) { nodes { id number title url } } } } }"
           echo "Trying subIssues field query: $QUERY1"
           
+          # Check rate limit before GraphQL query
+          check_rate_limit
+          
           set +e  # Don't exit on error
           gh api graphql -f query="$QUERY1" -f issue_id="$ISSUE_ID" > subissues_response.json 2>/dev/null
           QUERY1_SUCCESS=$?
@@ -134,6 +195,9 @@ jobs:
           if [ -z "$SUBISSUES" ]; then
             QUERY2="query(\$issue_id: ID!) { node(id: \$issue_id) { ... on Issue { id number body timelineItems(first: 100, itemTypes: [CROSS_REFERENCED_EVENT]) { nodes { ... on CrossReferencedEvent { source { ... on Issue { id number title url } } } } } } } }"
             echo "Trying timeline items query: $QUERY2"
+            
+            # Check rate limit before GraphQL query
+            check_rate_limit
             
             gh api graphql -f query="$QUERY2" -f issue_id="$ISSUE_ID" > subissues_response.json
             
@@ -258,6 +322,10 @@ jobs:
 
         while : ; do
           echo "Executing gh api command: gh api \"/repos/im-infomagnus/ms-code-with-engineering-playbook/issues?state=open&per_page=$PER_PAGE&page=$PAGE\""
+          
+          # Check rate limit before API call
+          check_rate_limit
+          
           RESPONSE=$(gh api "repos/im-infomagnus/ms-code-with-engineering-playbook/issues?state=open&per_page=$PER_PAGE&page=$PAGE")
          
           #echo "Raw response for page $PAGE:"
@@ -343,6 +411,59 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets[inputs.pat_secret] }}
       run: |
+        # Rate limit checking function with exponential backoff
+        check_rate_limit() {
+          echo "Checking GitHub API rate limit..."
+          
+          # Get current rate limit status
+          RATE_LIMIT_RESPONSE=$(gh api /rate_limit)
+          REMAINING=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.rate.remaining')
+          LIMIT=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.rate.limit')
+          RESET_TIME=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.rate.reset')
+          
+          echo "API Rate Limit Status: $REMAINING remaining out of $LIMIT (resets at $(date -d @$RESET_TIME))"
+          
+          # Check if we're approaching the limit (less than 50 remaining)
+          if [ "$REMAINING" -lt 50 ]; then
+            echo "WARNING: API rate limit is low ($REMAINING remaining). Initiating backoff strategy..."
+            
+            local iteration=1
+            local wait_time=30
+            local max_iterations=10
+            
+            while [ $iteration -le $max_iterations ]; do
+              echo "Backoff iteration $iteration/$max_iterations: waiting ${wait_time} seconds..."
+              sleep $wait_time
+              
+              # Check rate limit again
+              RATE_LIMIT_RESPONSE=$(gh api /rate_limit)
+              NEW_REMAINING=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.rate.remaining')
+              
+              echo "Rate limit after wait: $NEW_REMAINING remaining"
+              
+              # Check if the limit increased by more than 100
+              local increase=$((NEW_REMAINING - REMAINING))
+              if [ $increase -gt 100 ]; then
+                echo "Rate limit increased by $increase. Continuing with API calls..."
+                return 0
+              fi
+              
+              # If this is the last iteration and limit hasn't increased sufficiently
+              if [ $iteration -eq $max_iterations ]; then
+                echo "ERROR: Available API limit ceiling has been reached"
+                exit 1
+              fi
+              
+              # Double the wait time for next iteration
+              wait_time=$((wait_time * 2))
+              iteration=$((iteration + 1))
+              REMAINING=$NEW_REMAINING
+            done
+          fi
+          
+          echo "Rate limit check passed. Proceeding with API call..."
+        }
+
         PROJECT_NAME="${{ inputs.project_name }}"
         
         # Fetch the Project ID using v1 API
@@ -351,6 +472,9 @@ jobs:
         PROJECT_NAME="${{ inputs.project_name }}"
 
         echo "Fetching project ID for project '$PROJECT_NAME' in organization '$ORG_NAME'"
+
+        # Check rate limit before API call
+        check_rate_limit
 
         # Fetch the Project ID using GraphQL API for Projects v2
         GRAPHQL_QUERY='query($org: String!) {
@@ -392,6 +516,9 @@ jobs:
         for parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
           echo "Adding issue #$parent to the project"
           
+          # Check rate limit before GraphQL query for issue ID
+          check_rate_limit
+          
           # Get the issue ID using GraphQL (Global ID needed for Projects v2)
           ISSUE_QUERY='query($owner: String!, $repo: String!, $issueNumber: Int!) {
             repository(owner: $owner, name: $repo) {
@@ -404,6 +531,9 @@ jobs:
           ISSUE_RESPONSE=$(gh api graphql -f query="$ISSUE_QUERY" -f owner="im-infomagnus" -f repo="ms-code-with-engineering-playbook" -F issueNumber="$parent")
           ISSUE_ID=$(echo "$ISSUE_RESPONSE" | jq -r '.data.repository.issue.id')
           echo "Issue Global ID: ${ISSUE_ID}"
+          
+          # Check rate limit before GraphQL mutation
+          check_rate_limit
           
           # Add the issue to the project using GraphQL mutation for Projects v2
           ADD_MUTATION='mutation($projectId: ID!, $contentId: ID!) {
@@ -429,6 +559,10 @@ jobs:
           for child in $(jq -c --arg parent "$parent" '.[$parent][]' parent_child_links.json); do
             CHILD_NUMBER=$(echo "$child" | jq -r '.number')
             echo "Linking child issue #$CHILD_NUMBER to parent issue #$parent"
+            
+            # Check rate limit before REST API call
+            check_rate_limit
+            
             curl -s -X POST \
               -H "Authorization: token $GITHUB_TOKEN" \
               -H "Accept: application/vnd.github.v3+json" \
@@ -442,6 +576,59 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets[inputs.pat_secret] }}
       run: |
+        # Rate limit checking function with exponential backoff
+        check_rate_limit() {
+          echo "Checking GitHub API rate limit..."
+          
+          # Get current rate limit status
+          RATE_LIMIT_RESPONSE=$(gh api /rate_limit)
+          REMAINING=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.rate.remaining')
+          LIMIT=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.rate.limit')
+          RESET_TIME=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.rate.reset')
+          
+          echo "API Rate Limit Status: $REMAINING remaining out of $LIMIT (resets at $(date -d @$RESET_TIME))"
+          
+          # Check if we're approaching the limit (less than 50 remaining)
+          if [ "$REMAINING" -lt 50 ]; then
+            echo "WARNING: API rate limit is low ($REMAINING remaining). Initiating backoff strategy..."
+            
+            local iteration=1
+            local wait_time=30
+            local max_iterations=10
+            
+            while [ $iteration -le $max_iterations ]; do
+              echo "Backoff iteration $iteration/$max_iterations: waiting ${wait_time} seconds..."
+              sleep $wait_time
+              
+              # Check rate limit again
+              RATE_LIMIT_RESPONSE=$(gh api /rate_limit)
+              NEW_REMAINING=$(echo "$RATE_LIMIT_RESPONSE" | jq -r '.rate.remaining')
+              
+              echo "Rate limit after wait: $NEW_REMAINING remaining"
+              
+              # Check if the limit increased by more than 100
+              local increase=$((NEW_REMAINING - REMAINING))
+              if [ $increase -gt 100 ]; then
+                echo "Rate limit increased by $increase. Continuing with API calls..."
+                return 0
+              fi
+              
+              # If this is the last iteration and limit hasn't increased sufficiently
+              if [ $iteration -eq $max_iterations ]; then
+                echo "ERROR: Available API limit ceiling has been reached"
+                exit 1
+              fi
+              
+              # Double the wait time for next iteration
+              wait_time=$((wait_time * 2))
+              iteration=$((iteration + 1))
+              REMAINING=$NEW_REMAINING
+            done
+          fi
+          
+          echo "Rate limit check passed. Proceeding with API call..."
+        }
+
         # Log the contents of the JSON file before updating parent issues
         echo "Contents of parent_child_links.json before updating parent issues:"
         cat parent_child_links.json
@@ -449,6 +636,10 @@ jobs:
         for parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
           CHILD_LINKS=$(jq -r --arg parent "$parent" '.[$parent][] | "- [Issue #\(.number)](\(.url))"' parent_child_links.json | tr '\n' '\n')
           echo "Updating parent issue #$parent with child links"
+          
+          # Check rate limit before REST API call
+          check_rate_limit
+          
           curl -s -X PATCH \
             -H "Authorization: token $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
