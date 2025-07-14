@@ -7,6 +7,22 @@ on:
         description: 'The name of the GitHub Project to update'
         required: true
         default: ''
+      source_owner:
+        description: 'The owner of the source repository'
+        required: true
+        default: 'im-infomagnus'
+      source_repo:
+        description: 'The name of the source repository'
+        required: true
+        default: 'ms-code-with-engineering-playbook'
+      target_owner:
+        description: 'The owner of the target repository'
+        required: true
+        default: ''
+      target_repo:
+        description: 'The name of the target repository'
+        required: true
+        default: ''
       pat_secret:
         description: 'The name of the secret containing the PAT'
         required: true
@@ -35,9 +51,16 @@ jobs:
       id: fetch_hierarchy
       env:
         GITHUB_TOKEN: ${{ secrets[inputs.pat_secret] }}
+        SOURCE_OWNER: ${{ inputs.source_owner }}
+        SOURCE_REPO: ${{ inputs.source_repo }}
+        TARGET_OWNER: ${{ inputs.target_owner }}
+        TARGET_REPO: ${{ inputs.target_repo }}
       run: |
         # Initialize parent-child relationships file
         echo "{}" > parent_child_links.json
+        
+        # Initialize broken URLs log
+        echo "[]" > broken_urls.json
 
         # Recursive function to fetch sub-issues and build hierarchy
         fetch_subissues() {
@@ -48,7 +71,7 @@ jobs:
 
           # Fetch sub-issues for the current issue
           curl -s -H "Authorization: token $GITHUB_TOKEN" \
-            "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues/$issue_number/sub-issues" > subissues_response.json
+            "https://api.github.com/repos/$SOURCE_OWNER/$SOURCE_REPO/issues/$issue_number/sub-issues" > subissues_response.json
 
           echo "Raw response for sub-issues of issue #$issue_number:"
           cat subissues_response.json
@@ -92,7 +115,7 @@ jobs:
         }
         # Fetch all top-level issues
         TOP_LEVEL_ISSUES=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-          "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues?state=open" | jq -c '.[]')
+          "https://api.github.com/repos/$SOURCE_OWNER/$SOURCE_REPO/issues?state=open" | jq -c '.[]')
 
         echo "Top-level issues:"
         echo "$TOP_LEVEL_ISSUES" | jq -r '.number'
@@ -110,18 +133,135 @@ jobs:
 
         echo "Full parent-child hierarchy constructed and saved to parent_child_links.json."
 
+    - name: Copy Issues to Target Repository and Track Mapping
+      id: copy_issues
+      env:
+        GITHUB_TOKEN: ${{ secrets[inputs.pat_secret] }}
+        SOURCE_OWNER: ${{ inputs.source_owner }}
+        SOURCE_REPO: ${{ inputs.source_repo }}
+        TARGET_OWNER: ${{ inputs.target_owner }}
+        TARGET_REPO: ${{ inputs.target_repo }}
+      run: |
+        # Initialize source-to-target issue mapping
+        echo "{}" > source_target_mapping.json
+        
+        # Function to log broken URLs
+        log_broken_url() {
+          local broken_url="$1"
+          local context="$2"
+          echo "Logging broken URL: $broken_url (context: $context)"
+          
+          # Add to broken URLs log
+          jq --arg url "$broken_url" --arg context "$context" \
+            '. += [{"url": $url, "context": $context, "timestamp": now | todate}]' \
+            broken_urls.json > broken_urls_temp.json && \
+            mv broken_urls_temp.json broken_urls.json
+        }
+
+        echo "=== Copying Issues from Source to Target Repository ==="
+        
+        # Get all unique issue numbers from parent_child_links.json
+        ALL_ISSUES=$(jq -r 'keys_unsorted[]' parent_child_links.json)
+        CHILD_ISSUES=$(jq -r '.[] | .[].number' parent_child_links.json)
+        
+        # Combine parent and child issues, remove duplicates
+        ALL_UNIQUE_ISSUES=$(echo -e "$ALL_ISSUES\n$CHILD_ISSUES" | sort -n | uniq)
+        
+        echo "Issues to copy: $ALL_UNIQUE_ISSUES"
+        
+        # Copy each issue from source to target repository
+        for source_issue_number in $ALL_UNIQUE_ISSUES; do
+          echo "Copying issue #$source_issue_number from $SOURCE_OWNER/$SOURCE_REPO to $TARGET_OWNER/$TARGET_REPO"
+          
+          # Fetch the source issue details
+          SOURCE_ISSUE_RESPONSE=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+            "https://api.github.com/repos/$SOURCE_OWNER/$SOURCE_REPO/issues/$source_issue_number")
+          
+          # Check if source issue exists
+          if ! echo "$SOURCE_ISSUE_RESPONSE" | jq -e '.number' >/dev/null 2>&1; then
+            echo "Warning: Source issue #$source_issue_number not found or invalid response"
+            log_broken_url "https://github.com/$SOURCE_OWNER/$SOURCE_REPO/issues/$source_issue_number" "Source issue not found"
+            continue
+          fi
+          
+          # Extract issue details
+          TITLE=$(echo "$SOURCE_ISSUE_RESPONSE" | jq -r '.title')
+          BODY=$(echo "$SOURCE_ISSUE_RESPONSE" | jq -r '.body // ""')
+          LABELS=$(echo "$SOURCE_ISSUE_RESPONSE" | jq -r '.labels[].name' | jq -Rs 'split("\n") | map(select(length > 0))')
+          
+          # Transform URLs in the body to point to target repository
+          TRANSFORMED_BODY=$(echo "$BODY" | sed "s|https://github.com/$SOURCE_OWNER/$SOURCE_REPO|https://github.com/$TARGET_OWNER/$TARGET_REPO|g")
+          
+          # Add a note about the source
+          TRANSFORMED_BODY="$TRANSFORMED_BODY"$'\n\n'"________________________________________"$'\n'"*Copied from: https://github.com/$SOURCE_OWNER/$SOURCE_REPO/issues/$source_issue_number*"
+          
+          echo "Creating new issue in target repository..."
+          echo "Title: $TITLE"
+          
+          # Create the issue in target repository
+          CREATE_RESPONSE=$(curl -s -X POST \
+            -H "Authorization: token $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            -d "$(jq -n \
+              --arg title "$TITLE" \
+              --arg body "$TRANSFORMED_BODY" \
+              --argjson labels "$LABELS" \
+              '{"title": $title, "body": $body, "labels": $labels}')" \
+            "https://api.github.com/repos/$TARGET_OWNER/$TARGET_REPO/issues")
+          
+          # Check if issue was created successfully
+          if echo "$CREATE_RESPONSE" | jq -e '.number' >/dev/null 2>&1; then
+            TARGET_ISSUE_NUMBER=$(echo "$CREATE_RESPONSE" | jq -r '.number')
+            echo "Successfully created issue #$TARGET_ISSUE_NUMBER in target repository"
+            
+            # Update source-to-target mapping
+            jq --arg source "$source_issue_number" \
+               --arg target "$TARGET_ISSUE_NUMBER" \
+               '.[$source] = $target' \
+               source_target_mapping.json > source_target_mapping_temp.json && \
+               mv source_target_mapping_temp.json source_target_mapping.json
+            
+            echo "Mapped source issue #$source_issue_number -> target issue #$TARGET_ISSUE_NUMBER"
+          else
+            echo "Error: Failed to create issue in target repository"
+            echo "Response: $CREATE_RESPONSE"
+            log_broken_url "https://github.com/$TARGET_OWNER/$TARGET_REPO" "Failed to create issue from source #$source_issue_number"
+          fi
+        done
+        
+        echo "=== Issue Copying Complete ==="
+        echo "Source-to-target mapping:"
+        cat source_target_mapping.json
+
     - name: Add Issues to GitHub Project and Maintain Relationships
       id: add_issues
       env:
         GITHUB_TOKEN: ${{ secrets[inputs.pat_secret] }}
+        SOURCE_OWNER: ${{ inputs.source_owner }}
+        SOURCE_REPO: ${{ inputs.source_repo }}
+        TARGET_OWNER: ${{ inputs.target_owner }}
+        TARGET_REPO: ${{ inputs.target_repo }}
       run: |
+        # Function to log broken URLs
+        log_broken_url() {
+          local broken_url="$1"
+          local context="$2"
+          echo "Logging broken URL: $broken_url (context: $context)"
+          
+          # Add to broken URLs log
+          jq --arg url "$broken_url" --arg context "$context" \
+            '. += [{"url": $url, "context": $context, "timestamp": now | todate}]' \
+            broken_urls.json > broken_urls_temp.json && \
+            mv broken_urls_temp.json broken_urls.json
+        }
+
         PROJECT_NAME="${{ inputs.project_name }}"
         
-        # Fetch the Project ID
+        # Fetch the Project ID using v1 API (simplified for template)
         PROJECT_ID=$(curl -s \
           -H "Authorization: token $GITHUB_TOKEN" \
           -H "Accept: application/vnd.github.inertia-preview+json" \
-          "https://api.github.com/orgs/im-infomagnus/projects" | \
+          "https://api.github.com/orgs/$TARGET_OWNER/projects" | \
           jq -r ".[] | select(.name==\"$PROJECT_NAME\") | .id")
 
         if [ -z "$PROJECT_ID" ]; then
@@ -131,56 +271,161 @@ jobs:
 
         echo "Project ID: $PROJECT_ID"
 
-        # Log the contents of the JSON file before adding issues
-        echo "Contents of parent_child_links.json before adding issues to the project:"
-        cat parent_child_links.json
-
-        # Add all issues to the project
-        for parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
-          echo "Adding issue #$parent to the project"
+        # Add all issues to the project (using target repository issues)
+        for source_parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
+          # Get the target issue number from mapping
+          TARGET_PARENT=$(jq -r --arg source "$source_parent" '.[$source] // empty' source_target_mapping.json)
+          
+          if [ -z "$TARGET_PARENT" ] || [ "$TARGET_PARENT" = "null" ]; then
+            echo "Warning: No target mapping found for source issue #$source_parent"
+            log_broken_url "https://github.com/$SOURCE_OWNER/$SOURCE_REPO/issues/$source_parent" "No target mapping found"
+            continue
+          fi
+          
+          echo "Adding target issue #$TARGET_PARENT (from source #$source_parent) to the project"
           curl -s -X POST \
             -H "Authorization: token $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.inertia-preview+json" \
             -d "{\"content_id\": $(curl -s -H "Authorization: token $GITHUB_TOKEN" \
-              "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues/$parent" | jq -r '.id'), \"content_type\": \"Issue\"}" \
+              "https://api.github.com/repos/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_PARENT" | jq -r '.id'), \"content_type\": \"Issue\"}" \
             "https://api.github.com/projects/$PROJECT_ID/columns/1/cards"
-          echo "Issue #$parent added to the project"
+          echo "Target issue #$TARGET_PARENT added to the project"
         done
 
-        # Log the contents of the JSON file before linking child issues
-        echo "Contents of parent_child_links.json before linking child issues:"
-        cat parent_child_links.json
-
-        # Link child issues to their parents
-        for parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
-          for child in $(jq -c --arg parent "$parent" '.[$parent][]' parent_child_links.json); do
-            CHILD_NUMBER=$(echo $child | jq -r '.[0]')
-            echo "Linking child issue #$CHILD_NUMBER to parent issue #$parent"
-            curl -s -X POST \
+        # Link child issues to their parents (using target repository issue numbers)
+        for source_parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
+          # Get the target parent issue number
+          TARGET_PARENT=$(jq -r --arg source "$source_parent" '.[$source] // empty' source_target_mapping.json)
+          
+          if [ -z "$TARGET_PARENT" ] || [ "$TARGET_PARENT" = "null" ]; then
+            echo "Warning: No target mapping found for source parent issue #$source_parent"
+            continue
+          fi
+          
+          for child in $(jq -c --arg parent "$source_parent" '.[$parent][]' parent_child_links.json); do
+            SOURCE_CHILD_NUMBER=$(echo $child | jq -r '.number')
+            
+            # Get the target child issue number
+            TARGET_CHILD=$(jq -r --arg source "$SOURCE_CHILD_NUMBER" '.[$source] // empty' source_target_mapping.json)
+            
+            if [ -z "$TARGET_CHILD" ] || [ "$TARGET_CHILD" = "null" ]; then
+              echo "Warning: No target mapping found for source child issue #$SOURCE_CHILD_NUMBER"
+              log_broken_url "https://github.com/$SOURCE_OWNER/$SOURCE_REPO/issues/$SOURCE_CHILD_NUMBER" "No target mapping found for child issue"
+              continue
+            fi
+            
+            echo "Linking target child issue #$TARGET_CHILD to target parent issue #$TARGET_PARENT"
+            
+            # Check if child issue exists in target repository before linking
+            CHILD_CHECK_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
               -H "Authorization: token $GITHUB_TOKEN" \
-              -H "Accept: application/vnd.github.v3+json" \
-              -d "{\"body\": \"Child of: #$parent\"}" \
-              "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues/$CHILD_NUMBER/comments"
-            echo "Child Issue #$CHILD_NUMBER linked to Parent Issue #$parent"
+              "https://api.github.com/repos/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_CHILD")
+            
+            if [ "$CHILD_CHECK_RESPONSE" = "200" ]; then
+              COMMENT_RESPONSE=$(curl -s -X POST \
+                -H "Authorization: token $GITHUB_TOKEN" \
+                -H "Accept: application/vnd.github.v3+json" \
+                -d "{\"body\": \"Child of: #$TARGET_PARENT\"}" \
+                "https://api.github.com/repos/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_CHILD/comments")
+              
+              # Check if the comment was created successfully
+              if echo "$COMMENT_RESPONSE" | jq -e '.id' >/dev/null 2>&1; then
+                echo "Child Issue #$TARGET_CHILD linked to Parent Issue #$TARGET_PARENT"
+              else
+                echo "Warning: Failed to link child issue #$TARGET_CHILD to parent #$TARGET_PARENT"
+              fi
+            else
+              echo "Warning: Child issue #$TARGET_CHILD does not exist in target repository (HTTP $CHILD_CHECK_RESPONSE)"
+            fi
           done
         done
 
     - name: Update Parent Issues with Child Links
       env:
         GITHUB_TOKEN: ${{ secrets[inputs.pat_secret] }}
+        SOURCE_OWNER: ${{ inputs.source_owner }}
+        SOURCE_REPO: ${{ inputs.source_repo }}
+        TARGET_OWNER: ${{ inputs.target_owner }}
+        TARGET_REPO: ${{ inputs.target_repo }}
       run: |
-        # Log the contents of the JSON file before updating parent issues
-        echo "Contents of parent_child_links.json before updating parent issues:"
-        cat parent_child_links.json
+        # Function to log broken URLs
+        log_broken_url() {
+          local broken_url="$1"
+          local context="$2"
+          echo "Logging broken URL: $broken_url (context: $context)"
+          
+          # Add to broken URLs log
+          jq --arg url "$broken_url" --arg context "$context" \
+            '. += [{"url": $url, "context": $context, "timestamp": now | todate}]' \
+            broken_urls.json > broken_urls_temp.json && \
+            mv broken_urls_temp.json broken_urls.json
+        }
 
-        for parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
-          CHILD_LINKS=$(jq -r --arg parent "$parent" '.[$parent][] | "- [Issue #\(.[])](\(.[]))"' parent_child_links.json | tr '\n' '\n')
-          echo "Updating parent issue #$parent with child links"
-          curl -s -X PATCH \
+        for source_parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
+          # Get the target parent issue number
+          TARGET_PARENT=$(jq -r --arg source "$source_parent" '.[$source] // empty' source_target_mapping.json)
+          
+          if [ -z "$TARGET_PARENT" ] || [ "$TARGET_PARENT" = "null" ]; then
+            echo "Warning: No target mapping found for source parent issue #$source_parent"
+            continue
+          fi
+          
+          # Build child links using target issue numbers
+          CHILD_LINKS=""
+          for child in $(jq -c --arg parent "$source_parent" '.[$parent][]' parent_child_links.json); do
+            SOURCE_CHILD_NUMBER=$(echo $child | jq -r '.number')
+            TARGET_CHILD=$(jq -r --arg source "$SOURCE_CHILD_NUMBER" '.[$source] // empty' source_target_mapping.json)
+            
+            if [ -n "$TARGET_CHILD" ] && [ "$TARGET_CHILD" != "null" ]; then
+              CHILD_LINK="- [Issue #$TARGET_CHILD](https://github.com/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_CHILD)"
+              if [ -z "$CHILD_LINKS" ]; then
+                CHILD_LINKS="$CHILD_LINK"
+              else
+                CHILD_LINKS="$CHILD_LINKS"$'\n'"$CHILD_LINK"
+              fi
+            else
+              echo "Warning: No target mapping found for child issue #$SOURCE_CHILD_NUMBER"
+            fi
+          done
+          
+          if [ -z "$CHILD_LINKS" ]; then
+            echo "No child links to add for parent issue #$TARGET_PARENT"
+            continue
+          fi
+          
+          echo "Updating target parent issue #$TARGET_PARENT with child links"
+          
+          # Check if issue exists in target repository before updating
+          ISSUE_CHECK_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
             -H "Authorization: token $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github.v3+json" \
-            -d "{\"body\": \"# Linked Child Issues\n$CHILD_LINKS\"}" \
-            "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues/$parent"
-          echo "Parent Issue #$parent updated with child links."
+            "https://api.github.com/repos/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_PARENT")
+          
+          if [ "$ISSUE_CHECK_RESPONSE" = "200" ]; then
+            PATCH_RESPONSE=$(curl -s -X PATCH \
+              -H "Authorization: token $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              -d "{\"body\": \"# Linked Child Issues\n$CHILD_LINKS\"}" \
+              "https://api.github.com/repos/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_PARENT")
+            
+            # Check if the update was successful
+            if echo "$PATCH_RESPONSE" | jq -e '.number' >/dev/null 2>&1; then
+              echo "Parent Issue #$TARGET_PARENT updated with child links."
+            else
+              echo "Warning: Failed to update parent issue #$TARGET_PARENT"
+            fi
+          else
+            echo "Warning: Parent issue #$TARGET_PARENT does not exist in target repository (HTTP $ISSUE_CHECK_RESPONSE)"
+          fi
         done
         echo "All parent issues updated with child links."
+        
+        # Display summary of broken URLs if any
+        if [ -f broken_urls.json ] && [ "$(jq '. | length' broken_urls.json)" -gt 0 ]; then
+          echo "BROKEN URLS DETECTED:"
+          echo "====================="
+          jq -r '.[] | "URL: \(.url) | Context: \(.context) | Time: \(.timestamp)"' broken_urls.json
+          echo "====================="
+          echo "Total broken URLs: $(jq '. | length' broken_urls.json)"
+        else
+          echo "No broken URLs detected."
+        fi
