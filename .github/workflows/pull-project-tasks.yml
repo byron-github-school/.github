@@ -11,6 +11,10 @@ on:
         description: 'The name of the GitHub Project to update'
         required: true
         default: ''
+      target_repo:
+        description: 'The name of the target repository to copy issues to'
+        required: true
+        default: ''
       pat_secret:
         description: 'The name of the secret containing the PAT'
         required: true
@@ -92,8 +96,54 @@ jobs:
           
           echo "Rate limit check passed. Proceeding with API call..."
         }
+        
+        # Function to log broken URLs
+        log_broken_url() {
+          local broken_url="$1"
+          local context="$2"
+          echo "BROKEN_URL: $broken_url (Context: $context)" | tee -a broken_urls.log
+        }
+        
+        # Function to transform source URLs to target URLs
+        transform_url() {
+          local source_url="$1"
+          local target_org="${{ inputs.org_name }}"
+          local target_repo="${{ inputs.target_repo }}"
+          
+          # Transform GitHub issue URLs from source to target
+          echo "$source_url" | sed "s|https://github.com/im-infomagnus/ms-code-with-engineering-playbook|https://github.com/$target_org/$target_repo|g"
+        }
+        
+        # Function to check if an issue exists in target repository
+        check_target_issue_exists() {
+          local issue_number="$1"
+          local target_org="${{ inputs.org_name }}"
+          local target_repo="${{ inputs.target_repo }}"
+          
+          # Check rate limit before API call
+          check_rate_limit
+          
+          # Check if issue exists in target repository
+          set +e  # Don't exit on error
+          local response=$(gh api "repos/$target_org/$target_repo/issues/$issue_number" 2>/dev/null)
+          local exit_code=$?
+          set -e
+          
+          if [ $exit_code -eq 0 ]; then
+            echo "true"
+          else
+            echo "false"
+          fi
+        }
+        
         # Initialize parent-child relationships file
         echo "{}" > parent_child_links.json
+        
+        # Initialize broken URLs log file  
+        echo "# Broken URLs Log" > broken_urls.log
+        
+        # Initialize source-to-target issue mapping
+        echo "{}" > source_target_mapping.json
 
         # Validate JSON after initialization
         if ! jq empty parent_child_links.json; then
@@ -233,8 +283,9 @@ jobs:
                   # Convert to JSON format for consistency
                   SUBISSUES=""
                   for task_issue_num in $TASK_ISSUE_NUMBERS; do
-                    # Create a JSON object for each task issue
-                    TASK_ISSUE_JSON="{\"number\": $task_issue_num, \"title\": \"Task issue #$task_issue_num\", \"url\": \"https://github.com/im-infomagnus/ms-code-with-engineering-playbook/issues/$task_issue_num\"}"
+                    # Create a JSON object for each task issue with target URL
+                    TASK_ISSUE_URL="https://github.com/${{ inputs.org_name }}/${{ inputs.target_repo }}/issues/$task_issue_num"
+                    TASK_ISSUE_JSON="{\"number\": $task_issue_num, \"title\": \"Task issue #$task_issue_num\", \"url\": \"$TASK_ISSUE_URL\"}"
                     if [ -z "$SUBISSUES" ]; then
                       SUBISSUES="$TASK_ISSUE_JSON"
                     else
@@ -295,13 +346,21 @@ jobs:
             echo -e "$SUBISSUES" | while read -r subissue; do
               if [ -n "$subissue" ]; then
                 SUBISSUE_NUMBER=$(echo "$subissue" | jq -r '.number')
-                SUBISSUE_URL=$(echo "$subissue" | jq -r '.url // "https://github.com/im-infomagnus/ms-code-with-engineering-playbook/issues/\(.number)"')
+                SOURCE_SUBISSUE_URL=$(echo "$subissue" | jq -r '.url // "https://github.com/im-infomagnus/ms-code-with-engineering-playbook/issues/\(.number)"')
+                
+                # Transform URL to target repository
+                TARGET_SUBISSUE_URL=$(transform_url "$SOURCE_SUBISSUE_URL")
+                
+                # Check if target issue exists
+                if [ "$(check_target_issue_exists "$SUBISSUE_NUMBER")" = "false" ]; then
+                  log_broken_url "$TARGET_SUBISSUE_URL" "Sub-issue #$SUBISSUE_NUMBER referenced by parent issue #$issue_number"
+                fi
 
                 echo "Linking sub-issue #$SUBISSUE_NUMBER to parent issue #$issue_number"
 
                 jq --arg parent "$issue_number" \
                   --arg number "$SUBISSUE_NUMBER" \
-                  --arg url "$SUBISSUE_URL" \
+                  --arg url "$TARGET_SUBISSUE_URL" \
                   '.[$parent] += [{"number": $number, "url": $url}]' \
                   parent_child_links.json > temp.json \
                 && mv temp.json parent_child_links.json
@@ -528,7 +587,7 @@ jobs:
             }
           }'
           
-          ISSUE_RESPONSE=$(gh api graphql -f query="$ISSUE_QUERY" -f owner="im-infomagnus" -f repo="ms-code-with-engineering-playbook" -F issueNumber="$parent")
+          ISSUE_RESPONSE=$(gh api graphql -f query="$ISSUE_QUERY" -f owner="${{ inputs.org_name }}" -f repo="${{ inputs.target_repo }}" -F issueNumber="$parent")
           ISSUE_ID=$(echo "$ISSUE_RESPONSE" | jq -r '.data.repository.issue.id')
           echo "Issue Global ID: ${ISSUE_ID}"
           
@@ -554,11 +613,25 @@ jobs:
         echo "Contents of parent_child_links.json before linking child issues:"
         cat parent_child_links.json
 
-        # Link child issues to their parents
+        # Link child issues to their parents in target repository
         for parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
+          # Check if parent issue exists in target repository
+          if [ "$(check_target_issue_exists "$parent")" = "false" ]; then
+            log_broken_url "https://github.com/${{ inputs.org_name }}/${{ inputs.target_repo }}/issues/$parent" "Parent issue #$parent referenced in hierarchy"
+            echo "Warning: Parent issue #$parent does not exist in target repository"
+            continue
+          fi
+          
           for child in $(jq -c --arg parent "$parent" '.[$parent][]' parent_child_links.json); do
             CHILD_NUMBER=$(echo "$child" | jq -r '.number')
             echo "Linking child issue #$CHILD_NUMBER to parent issue #$parent"
+            
+            # Check if child issue exists in target repository
+            if [ "$(check_target_issue_exists "$CHILD_NUMBER")" = "false" ]; then
+              log_broken_url "https://github.com/${{ inputs.org_name }}/${{ inputs.target_repo }}/issues/$CHILD_NUMBER" "Child issue #$CHILD_NUMBER referenced by parent #$parent"
+              echo "Warning: Child issue #$CHILD_NUMBER does not exist in target repository"
+              continue
+            fi
             
             # Check rate limit before REST API call
             check_rate_limit
@@ -567,7 +640,7 @@ jobs:
               -H "Authorization: token $GITHUB_TOKEN" \
               -H "Accept: application/vnd.github.v3+json" \
               -d "{\"body\": \"Child of: #$parent\"}" \
-              "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues/$CHILD_NUMBER/comments"
+              "https://api.github.com/repos/${{ inputs.org_name }}/${{ inputs.target_repo }}/issues/$CHILD_NUMBER/comments"
             echo "Child Issue #$CHILD_NUMBER linked to Parent Issue #$parent"
           done
         done
@@ -634,8 +707,16 @@ jobs:
         cat parent_child_links.json
 
         for parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
-          CHILD_LINKS=$(jq -r --arg parent "$parent" '.[$parent][] | "- [Issue #\(.number)](\(.url))"' parent_child_links.json | tr '\n' '\n')
           echo "Updating parent issue #$parent with child links"
+          
+          # Check if parent issue exists in target repository
+          if [ "$(check_target_issue_exists "$parent")" = "false" ]; then
+            log_broken_url "https://github.com/${{ inputs.org_name }}/${{ inputs.target_repo }}/issues/$parent" "Parent issue #$parent being updated with child links"
+            echo "Warning: Parent issue #$parent does not exist in target repository"
+            continue
+          fi
+          
+          CHILD_LINKS=$(jq -r --arg parent "$parent" '.[$parent][] | "- [Issue #\(.number)](\(.url))"' parent_child_links.json | tr '\n' '\n')
           
           # Check rate limit before REST API call
           check_rate_limit
@@ -644,7 +725,16 @@ jobs:
             -H "Authorization: token $GITHUB_TOKEN" \
             -H "Accept: application/vnd.github.v3+json" \
             -d "{\"body\": \"# Linked Child Issues\n$CHILD_LINKS\"}" \
-            "https://api.github.com/repos/im-infomagnus/ms-code-with-engineering-playbook/issues/$parent"
+            "https://api.github.com/repos/${{ inputs.org_name }}/${{ inputs.target_repo }}/issues/$parent"
           echo "Parent Issue #$parent updated with child links."
         done
         echo "All parent issues updated with child links."
+        
+        # Display broken URLs summary
+        echo "=== BROKEN URLS SUMMARY ==="
+        if [ -f broken_urls.log ]; then
+          cat broken_urls.log
+        else
+          echo "No broken URLs detected."
+        fi
+        echo "==========================="
