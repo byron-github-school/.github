@@ -183,12 +183,28 @@ jobs:
           for child in $(jq -c --arg parent "$parent" '.[$parent][]' parent_child_links.json); do
             CHILD_NUMBER=$(echo $child | jq -r '.number')
             echo "Linking child issue #$CHILD_NUMBER to parent issue #$parent"
-            curl -s -X POST \
+            
+            # Check if child issue exists in target repository before linking
+            CHILD_CHECK_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
               -H "Authorization: token $GITHUB_TOKEN" \
-              -H "Accept: application/vnd.github.v3+json" \
-              -d "{\"body\": \"Child of: #$parent\"}" \
-              "https://api.github.com/repos/$TARGET_OWNER/$TARGET_REPO/issues/$CHILD_NUMBER/comments"
-            echo "Child Issue #$CHILD_NUMBER linked to Parent Issue #$parent"
+              "https://api.github.com/repos/$TARGET_OWNER/$TARGET_REPO/issues/$CHILD_NUMBER")
+            
+            if [ "$CHILD_CHECK_RESPONSE" = "200" ]; then
+              COMMENT_RESPONSE=$(curl -s -X POST \
+                -H "Authorization: token $GITHUB_TOKEN" \
+                -H "Accept: application/vnd.github.v3+json" \
+                -d "{\"body\": \"Child of: #$parent\"}" \
+                "https://api.github.com/repos/$TARGET_OWNER/$TARGET_REPO/issues/$CHILD_NUMBER/comments")
+              
+              # Check if the comment was created successfully
+              if echo "$COMMENT_RESPONSE" | jq -e '.id' >/dev/null 2>&1; then
+                echo "Child Issue #$CHILD_NUMBER linked to Parent Issue #$parent"
+              else
+                echo "Warning: Failed to link child issue #$CHILD_NUMBER to parent #$parent"
+              fi
+            else
+              echo "Warning: Child issue #$CHILD_NUMBER does not exist in target repository (HTTP $CHILD_CHECK_RESPONSE)"
+            fi
           done
         done
 
@@ -211,12 +227,28 @@ jobs:
           TRANSFORMED_CHILD_LINKS=$(echo "$CHILD_LINKS" | sed "s|https://github.com/$SOURCE_OWNER/$SOURCE_REPO|https://github.com/$TARGET_OWNER/$TARGET_REPO|g")
           
           echo "Updating parent issue #$parent with child links"
-          curl -s -X PATCH \
+          
+          # Check if issue exists in target repository before updating
+          ISSUE_CHECK_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
             -H "Authorization: token $GITHUB_TOKEN" \
-            -H "Accept: application/vnd.github.v3+json" \
-            -d "{\"body\": \"# Linked Child Issues\n$TRANSFORMED_CHILD_LINKS\"}" \
-            "https://api.github.com/repos/$TARGET_OWNER/$TARGET_REPO/issues/$parent"
-          echo "Parent Issue #$parent updated with child links."
+            "https://api.github.com/repos/$TARGET_OWNER/$TARGET_REPO/issues/$parent")
+          
+          if [ "$ISSUE_CHECK_RESPONSE" = "200" ]; then
+            PATCH_RESPONSE=$(curl -s -X PATCH \
+              -H "Authorization: token $GITHUB_TOKEN" \
+              -H "Accept: application/vnd.github.v3+json" \
+              -d "{\"body\": \"# Linked Child Issues\n$TRANSFORMED_CHILD_LINKS\"}" \
+              "https://api.github.com/repos/$TARGET_OWNER/$TARGET_REPO/issues/$parent")
+            
+            # Check if the update was successful
+            if echo "$PATCH_RESPONSE" | jq -e '.number' >/dev/null 2>&1; then
+              echo "Parent Issue #$parent updated with child links."
+            else
+              echo "Warning: Failed to update parent issue #$parent"
+            fi
+          else
+            echo "Warning: Parent issue #$parent does not exist in target repository (HTTP $ISSUE_CHECK_RESPONSE)"
+          fi
         done
         echo "All parent issues updated with child links."
         
