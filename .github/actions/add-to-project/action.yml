@@ -291,12 +291,16 @@ runs:
                 continue
               fi
               
+              # For PARENT_ISSUE field type, the value should be a JSON object with issueId
+              # Use jq to properly format the JSON value
+              VALUE_JSON=$(jq -n --arg issueId "$PARENT_ISSUE_ID" '{issueId: $issueId}')
+              
               UPDATE_FIELD_RESPONSE=$(gh api graphql \
                 -f query="$UPDATE_FIELD_MUTATION" \
                 -f projectId="$PROJECT_ID" \
                 -f itemId="$CHILD_ITEM_ID" \
                 -f fieldId="$PARENT_FIELD_ID" \
-                -f value="$PARENT_ISSUE_ID")
+                --raw-field value="$VALUE_JSON")
               
               # Check if the update was successful
               if echo "$UPDATE_FIELD_RESPONSE" | jq -e '.data.updateProjectV2ItemFieldValue.projectV2Item.id' >/dev/null 2>&1; then
