@@ -284,18 +284,18 @@ runs:
               # Set parent-child relationship using the parent issue's Global ID
               echo "Setting parent-child relationship: Child item $CHILD_ITEM_ID -> Parent issue Global ID $PARENT_ISSUE_GLOBAL_ID"
               
-              # GitHub Projects v2 PARENT_ISSUE fields expect the parent's Global ID as the value
-              # Try different formats until one works
+              # GitHub Projects v2 PARENT_ISSUE fields expect structured GraphQL input values
+              # The key insight: don't use ProjectV2FieldValue as a variable, structure the value directly in the mutation
               
-              # Format 1: Direct Global ID string
-              echo "Attempting format 1: Direct Global ID string"
+              # Format 1: Try text field with issue reference
+              echo "Attempting format 1: Text field with issue reference"
               UPDATE_FIELD_RESPONSE=$(gh api graphql \
-                --raw-field query="mutation(\$projectId: ID!, \$itemId: ID!, \$fieldId: ID!, \$value: ProjectV2FieldValue!) {
+                --raw-field query="mutation(\$projectId: ID!, \$itemId: ID!, \$fieldId: ID!, \$textValue: String!) {
                   updateProjectV2ItemFieldValue(input: {
                     projectId: \$projectId,
                     itemId: \$itemId,
                     fieldId: \$fieldId,
-                    value: \$value
+                    value: { text: \$textValue }
                   }) {
                     projectV2Item {
                       id
@@ -305,7 +305,7 @@ runs:
                 --field projectId="$PROJECT_ID" \
                 --field itemId="$CHILD_ITEM_ID" \
                 --field fieldId="$PARENT_FIELD_ID" \
-                -f value="$PARENT_ISSUE_GLOBAL_ID" 2>&1 || true)
+                --field textValue="#$TARGET_PARENT" 2>&1 || true)
               
               echo "Format 1 response: $UPDATE_FIELD_RESPONSE"
               
@@ -313,16 +313,16 @@ runs:
               if echo "$UPDATE_FIELD_RESPONSE" | jq -e '.data.updateProjectV2ItemFieldValue.projectV2Item.id' >/dev/null 2>&1; then
                 echo "SUCCESS: Format 1 worked - Set parent-child relationship: Child issue #$TARGET_CHILD -> Parent issue #$TARGET_PARENT"
               else
-                echo "Format 1 failed, trying format 2: Text with issue reference"
+                echo "Format 1 failed, trying format 2: Number field with issue number"
                 
-                # Format 2: Text value with issue reference
+                # Format 2: Try number field with issue number
                 UPDATE_FIELD_RESPONSE=$(gh api graphql \
-                  --raw-field query="mutation(\$projectId: ID!, \$itemId: ID!, \$fieldId: ID!, \$value: ProjectV2FieldValue!) {
+                  --raw-field query="mutation(\$projectId: ID!, \$itemId: ID!, \$fieldId: ID!, \$numberValue: Float!) {
                     updateProjectV2ItemFieldValue(input: {
                       projectId: \$projectId,
                       itemId: \$itemId,
                       fieldId: \$fieldId,
-                      value: \$value
+                      value: { number: \$numberValue }
                     }) {
                       projectV2Item {
                         id
@@ -332,7 +332,7 @@ runs:
                   --field projectId="$PROJECT_ID" \
                   --field itemId="$CHILD_ITEM_ID" \
                   --field fieldId="$PARENT_FIELD_ID" \
-                  --raw-field value="{\"text\": \"#$TARGET_PARENT\"}" 2>&1 || true)
+                  --field numberValue="$TARGET_PARENT" 2>&1 || true)
                 
                 echo "Format 2 response: $UPDATE_FIELD_RESPONSE"
                 
@@ -340,26 +340,26 @@ runs:
                 if echo "$UPDATE_FIELD_RESPONSE" | jq -e '.data.updateProjectV2ItemFieldValue.projectV2Item.id' >/dev/null 2>&1; then
                   echo "SUCCESS: Format 2 worked - Set parent-child relationship: Child issue #$TARGET_CHILD -> Parent issue #$TARGET_PARENT"
                 else
-                  echo "Format 2 failed, trying format 3: Issue number as numeric value"
+                  echo "Format 2 failed, trying format 3: Direct Global ID for issueId field"
                   
-                  # Format 3: Number value with issue number
+                  # Format 3: Try using the issueId field with parent's Global ID
                   UPDATE_FIELD_RESPONSE=$(gh api graphql \
-                    --raw-field query="mutation(\$projectId: ID!, \$itemId: ID!, \$fieldId: ID!, \$value: ProjectV2FieldValue!) {
+                    --raw-field query="mutation(\$projectId: ID!, \$itemId: ID!, \$fieldId: ID!, \$issueId: ID!) {
                       updateProjectV2ItemFieldValue(input: {
                         projectId: \$projectId,
                         itemId: \$itemId,
                         fieldId: \$fieldId,
-                        value: \$value
+                        value: { issueId: \$issueId }
                       }) {
-                      projectV2Item {
-                        id
-                      }
+                        projectV2Item {
+                          id
+                        }
                       }
                     }" \
                     --field projectId="$PROJECT_ID" \
                     --field itemId="$CHILD_ITEM_ID" \
                     --field fieldId="$PARENT_FIELD_ID" \
-                    --raw-field value="{\"number\": $TARGET_PARENT}" 2>&1 || true)
+                    --field issueId="$PARENT_ISSUE_GLOBAL_ID" 2>&1 || true)
                   
                   echo "Format 3 response: $UPDATE_FIELD_RESPONSE"
                   
@@ -367,27 +367,60 @@ runs:
                   if echo "$UPDATE_FIELD_RESPONSE" | jq -e '.data.updateProjectV2ItemFieldValue.projectV2Item.id' >/dev/null 2>&1; then
                     echo "SUCCESS: Format 3 worked - Set parent-child relationship: Child issue #$TARGET_CHILD -> Parent issue #$TARGET_PARENT"
                   else
-                    echo "ALL FORMATS FAILED. Full error details:"
+                    echo "Format 3 failed, trying format 4: Direct Global ID as single value"
                     
-                    # Log all error responses
-                    echo "=== Format 1 (Direct Global ID) Error ==="
-                    if echo "$UPDATE_FIELD_RESPONSE" | jq -e '.errors' >/dev/null 2>&1; then
-                      echo "$UPDATE_FIELD_RESPONSE" | jq -r '.errors[] | "- \(.message)"'
+                    # Format 4: Try single Global ID value
+                    UPDATE_FIELD_RESPONSE=$(gh api graphql \
+                      --raw-field query="mutation(\$projectId: ID!, \$itemId: ID!, \$fieldId: ID!, \$parentId: ID!) {
+                        updateProjectV2ItemFieldValue(input: {
+                          projectId: \$projectId,
+                          itemId: \$itemId,
+                          fieldId: \$fieldId,
+                          value: { singleSelectOptionId: \$parentId }
+                        }) {
+                          projectV2Item {
+                            id
+                          }
+                        }
+                      }" \
+                      --field projectId="$PROJECT_ID" \
+                      --field itemId="$CHILD_ITEM_ID" \
+                      --field fieldId="$PARENT_FIELD_ID" \
+                      --field parentId="$PARENT_ISSUE_GLOBAL_ID" 2>&1 || true)
+                    
+                    echo "Format 4 response: $UPDATE_FIELD_RESPONSE"
+                    
+                    # Check if format 4 succeeded
+                    if echo "$UPDATE_FIELD_RESPONSE" | jq -e '.data.updateProjectV2ItemFieldValue.projectV2Item.id' >/dev/null 2>&1; then
+                      echo "SUCCESS: Format 4 worked - Set parent-child relationship: Child issue #$TARGET_CHILD -> Parent issue #$TARGET_PARENT"
                     else
-                      echo "No JSON errors found. Raw response:"
-                      echo "$UPDATE_FIELD_RESPONSE"
+                      echo "ALL FORMATS FAILED. Detailed error analysis:"
+                      
+                      # Extract and log specific error messages for each format
+                      echo "=== Format 1 (Text Field) Error ==="
+                      if echo "$UPDATE_FIELD_RESPONSE" | jq -e '.errors' >/dev/null 2>&1; then
+                        echo "$UPDATE_FIELD_RESPONSE" | jq -r '.errors[] | "- \(.message)"'
+                        echo "$UPDATE_FIELD_RESPONSE" | jq -r '.errors[].extensions // empty'
+                      else
+                        echo "No JSON errors found. Raw response:"
+                        echo "$UPDATE_FIELD_RESPONSE"
+                      fi
+                      
+                      echo -e "\n=== Attempted Formats Summary ==="
+                      echo "1. Text field: { text: \"#$TARGET_PARENT\" }"
+                      echo "2. Number field: { number: $TARGET_PARENT }"
+                      echo "3. IssueId field: { issueId: \"$PARENT_ISSUE_GLOBAL_ID\" }"
+                      echo "4. SingleSelect field: { singleSelectOptionId: \"$PARENT_ISSUE_GLOBAL_ID\" }"
+                      
+                      echo -e "\nERROR: Unable to set parent-child relationship after trying all GraphQL field value formats"
+                      echo "This suggests either:"
+                      echo "1. The PARENT_ISSUE field uses a different ProjectV2FieldValue structure"
+                      echo "2. The field requires special permissions or configuration"
+                      echo "3. The parent issue Global ID or project item IDs are invalid"
+                      
+                      log_broken_url "https://github.com/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_CHILD" "Failed to set parent field in project after trying all GraphQL formats: $(echo "$UPDATE_FIELD_RESPONSE" | jq -r '.errors[0].message // "Unknown error"')"
+                      exit 1
                     fi
-                    
-                    # Exit with error to stop the workflow and show the actual error
-                    echo "ERROR: Unable to set parent-child relationship after trying all known formats"
-                    echo "This indicates either:"
-                    echo "1. The PARENT_ISSUE field requires a different format not yet tried"
-                    echo "2. The Parent issue Global ID is invalid"
-                    echo "3. The child or parent items are not properly added to the project"
-                    echo "4. There's a permissions issue with the PAT token"
-                    
-                    log_broken_url "https://github.com/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_CHILD" "Failed to set parent field in project after trying all formats: $(echo "$UPDATE_FIELD_RESPONSE" | jq -r '.errors[0].message // "Unknown error"')"
-                    exit 1
                   fi
                 fi
               fi
