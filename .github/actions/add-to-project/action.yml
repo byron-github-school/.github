@@ -251,12 +251,38 @@ runs:
               
               echo "Setting parent-child relationship: Child item $CHILD_ITEM_ID (issue #$TARGET_CHILD) -> Parent item $PARENT_ITEM_ID (issue #$TARGET_PARENT)"
               
-              # For PARENT_ISSUE field type in GitHub Projects v2, use the parent's project item ID
-              # This is the correct approach since parent-child relationships are within project context
-              echo "Setting parent-child relationship using parent project item ID: $PARENT_ITEM_ID"
-              
               # Check rate limit before GraphQL mutation
               check_rate_limit
+              
+              # For PARENT_ISSUE fields, GitHub Projects v2 expects specific value format
+              # Based on GitHub's GraphQL schema, PARENT_ISSUE fields expect the issue's Global ID, not project item ID
+              
+              # First, get the parent issue's Global ID from the target repository
+              echo "Getting parent issue Global ID for issue #$TARGET_PARENT..."
+              
+              # Check rate limit before GraphQL query
+              check_rate_limit
+              
+              PARENT_ISSUE_QUERY='query($owner: String!, $repo: String!, $issueNumber: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  issue(number: $issueNumber) {
+                    id
+                  }
+                }
+              }'
+              
+              PARENT_ISSUE_RESPONSE=$(gh api graphql -f query="$PARENT_ISSUE_QUERY" -f owner="$TARGET_OWNER" -f repo="$TARGET_REPO" -F issueNumber="$TARGET_PARENT")
+              PARENT_ISSUE_GLOBAL_ID=$(echo "$PARENT_ISSUE_RESPONSE" | jq -r '.data.repository.issue.id')
+              
+              if [ -z "$PARENT_ISSUE_GLOBAL_ID" ] || [ "$PARENT_ISSUE_GLOBAL_ID" = "null" ]; then
+                echo "Warning: Could not get Global ID for parent issue #$TARGET_PARENT"
+                continue
+              fi
+              
+              echo "Parent issue #$TARGET_PARENT Global ID: $PARENT_ISSUE_GLOBAL_ID"
+              
+              # Set parent-child relationship using the parent issue's Global ID
+              echo "Setting parent-child relationship: Child item $CHILD_ITEM_ID -> Parent issue Global ID $PARENT_ISSUE_GLOBAL_ID"
               
               UPDATE_FIELD_RESPONSE=$(gh api graphql \
                 --raw-field query="mutation(\$projectId: ID!, \$itemId: ID!, \$fieldId: ID!, \$value: ProjectV2FieldValue!) {
@@ -274,14 +300,24 @@ runs:
                 --field projectId="$PROJECT_ID" \
                 --field itemId="$CHILD_ITEM_ID" \
                 --field fieldId="$PARENT_FIELD_ID" \
-                -f value="$PARENT_ITEM_ID" 2>&1)
+                -f value="$PARENT_ISSUE_GLOBAL_ID" 2>&1)
+              
+              echo "GraphQL update response: $UPDATE_FIELD_RESPONSE"
               
               # Check if the update succeeded
               if echo "$UPDATE_FIELD_RESPONSE" | jq -e '.data.updateProjectV2ItemFieldValue.projectV2Item.id' >/dev/null 2>&1; then
                 echo "Successfully set parent-child relationship: Child issue #$TARGET_CHILD -> Parent issue #$TARGET_PARENT"
               else
-                echo "Failed to set parent-child relationship: $UPDATE_FIELD_RESPONSE"
-                log_broken_url "https://github.com/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_CHILD" "Failed to set parent field in project using project item ID"
+                echo "ERROR: Failed to set parent-child relationship. Full response:"
+                echo "$UPDATE_FIELD_RESPONSE"
+                
+                # Parse and log specific error messages
+                if echo "$UPDATE_FIELD_RESPONSE" | jq -e '.errors' >/dev/null 2>&1; then
+                  echo "GraphQL Errors:"
+                  echo "$UPDATE_FIELD_RESPONSE" | jq -r '.errors[] | "- \(.message)"'
+                fi
+                
+                log_broken_url "https://github.com/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_CHILD" "Failed to set parent field in project: $(echo "$UPDATE_FIELD_RESPONSE" | jq -r '.errors[0].message // "Unknown error"')"
               fi
             done
           done
