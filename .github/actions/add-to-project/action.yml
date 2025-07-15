@@ -251,18 +251,14 @@ runs:
               
               echo "Setting parent-child relationship: Child item $CHILD_ITEM_ID (issue #$TARGET_CHILD) -> Parent item $PARENT_ITEM_ID (issue #$TARGET_PARENT)"
               
-              # Try multiple formats for PARENT_ISSUE field type in GitHub Projects v2
-              # Format 1: Using number field with issue number
-              echo "Attempting format 1: number field with issue number"
+              # For PARENT_ISSUE field type in GitHub Projects v2, use the parent's project item ID
+              # This is the correct approach since parent-child relationships are within project context
+              echo "Setting parent-child relationship using parent project item ID: $PARENT_ITEM_ID"
               
               # Check rate limit before GraphQL mutation
               check_rate_limit
               
-              PARENT_FIELD_VALUE_1=$(jq -n --arg parentNum "$TARGET_PARENT" '{
-                number: ($parentNum | tonumber)
-              }')
-              
-              UPDATE_FIELD_RESPONSE_1=$(gh api graphql \
+              UPDATE_FIELD_RESPONSE=$(gh api graphql \
                 --raw-field query="mutation(\$projectId: ID!, \$itemId: ID!, \$fieldId: ID!, \$value: ProjectV2FieldValue!) {
                   updateProjectV2ItemFieldValue(input: {
                     projectId: \$projectId,
@@ -278,105 +274,14 @@ runs:
                 --field projectId="$PROJECT_ID" \
                 --field itemId="$CHILD_ITEM_ID" \
                 --field fieldId="$PARENT_FIELD_ID" \
-                --raw-field value="$PARENT_FIELD_VALUE_1" 2>&1)
+                -f value="$PARENT_ITEM_ID" 2>&1)
               
-              # Check if format 1 succeeded
-              if echo "$UPDATE_FIELD_RESPONSE_1" | jq -e '.data.updateProjectV2ItemFieldValue.projectV2Item.id' >/dev/null 2>&1; then
-                echo "Successfully set parent-child relationship using number format: Child issue #$TARGET_CHILD -> Parent issue #$TARGET_PARENT"
-                continue
+              # Check if the update succeeded
+              if echo "$UPDATE_FIELD_RESPONSE" | jq -e '.data.updateProjectV2ItemFieldValue.projectV2Item.id' >/dev/null 2>&1; then
+                echo "Successfully set parent-child relationship: Child issue #$TARGET_CHILD -> Parent issue #$TARGET_PARENT"
               else
-                echo "Format 1 failed: $UPDATE_FIELD_RESPONSE_1"
-                
-                # Format 2: Using text field with issue reference
-                echo "Attempting format 2: text field with issue reference"
-                
-                # Check rate limit before GraphQL mutation
-                check_rate_limit
-                
-                PARENT_FIELD_VALUE_2=$(jq -n --arg parentRef "#$TARGET_PARENT" '{
-                  text: $parentRef
-                }')
-                
-                UPDATE_FIELD_RESPONSE_2=$(gh api graphql \
-                  --raw-field query="mutation(\$projectId: ID!, \$itemId: ID!, \$fieldId: ID!, \$value: ProjectV2FieldValue!) {
-                    updateProjectV2ItemFieldValue(input: {
-                      projectId: \$projectId,
-                      itemId: \$itemId,
-                      fieldId: \$fieldId,
-                      value: \$value
-                    }) {
-                      projectV2Item {
-                        id
-                      }
-                    }
-                  }" \
-                  --field projectId="$PROJECT_ID" \
-                  --field itemId="$CHILD_ITEM_ID" \
-                  --field fieldId="$PARENT_FIELD_ID" \
-                  --raw-field value="$PARENT_FIELD_VALUE_2" 2>&1)
-                
-                # Check if format 2 succeeded
-                if echo "$UPDATE_FIELD_RESPONSE_2" | jq -e '.data.updateProjectV2ItemFieldValue.projectV2Item.id' >/dev/null 2>&1; then
-                  echo "Successfully set parent-child relationship using text format: Child issue #$TARGET_CHILD -> Parent issue #$TARGET_PARENT"
-                  continue
-                else
-                  echo "Format 2 failed: $UPDATE_FIELD_RESPONSE_2"
-                  
-                  # Format 3: Get parent issue Global ID and use it directly
-                  echo "Attempting format 3: Global ID approach"
-                  
-                  # Check rate limit before GraphQL query for parent issue ID
-                  check_rate_limit
-                  
-                  # Get the parent issue's Global ID from the target repository
-                  PARENT_ISSUE_QUERY='query($owner: String!, $repo: String!, $issueNumber: Int!) {
-                    repository(owner: $owner, name: $repo) {
-                      issue(number: $issueNumber) {
-                        id
-                      }
-                    }
-                  }'
-                  
-                  PARENT_ISSUE_RESPONSE=$(gh api graphql -f query="$PARENT_ISSUE_QUERY" -f owner="$TARGET_OWNER" -f repo="$TARGET_REPO" -F issueNumber="$TARGET_PARENT")
-                  PARENT_ISSUE_ID=$(echo "$PARENT_ISSUE_RESPONSE" | jq -r '.data.repository.issue.id')
-                  
-                  if [ -z "$PARENT_ISSUE_ID" ] || [ "$PARENT_ISSUE_ID" = "null" ]; then
-                    echo "Warning: Could not get Global ID for parent issue #$TARGET_PARENT"
-                    log_broken_url "https://github.com/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_CHILD" "Could not get parent Global ID"
-                    continue
-                  fi
-                  
-                  # Check rate limit before GraphQL mutation
-                  check_rate_limit
-                  
-                  # Try direct Global ID as string
-                  UPDATE_FIELD_RESPONSE_3=$(gh api graphql \
-                    --raw-field query="mutation(\$projectId: ID!, \$itemId: ID!, \$fieldId: ID!, \$value: ProjectV2FieldValue!) {
-                      updateProjectV2ItemFieldValue(input: {
-                        projectId: \$projectId,
-                        itemId: \$itemId,
-                        fieldId: \$fieldId,
-                        value: \$value
-                      }) {
-                        projectV2Item {
-                          id
-                        }
-                      }
-                    }" \
-                    --field projectId="$PROJECT_ID" \
-                    --field itemId="$CHILD_ITEM_ID" \
-                    --field fieldId="$PARENT_FIELD_ID" \
-                    -f value="$PARENT_ISSUE_ID" 2>&1)
-                  
-                  # Check if format 3 succeeded
-                  if echo "$UPDATE_FIELD_RESPONSE_3" | jq -e '.data.updateProjectV2ItemFieldValue.projectV2Item.id' >/dev/null 2>&1; then
-                    echo "Successfully set parent-child relationship using Global ID: Child issue #$TARGET_CHILD -> Parent issue #$TARGET_PARENT"
-                  else
-                    echo "Format 3 failed: $UPDATE_FIELD_RESPONSE_3"
-                    echo "Warning: All formats failed to set parent field for child issue #$TARGET_CHILD"
-                    log_broken_url "https://github.com/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_CHILD" "Failed to set parent field in project - all formats failed"
-                  fi
-                fi
+                echo "Failed to set parent-child relationship: $UPDATE_FIELD_RESPONSE"
+                log_broken_url "https://github.com/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_CHILD" "Failed to set parent field in project using project item ID"
               fi
             done
           done
