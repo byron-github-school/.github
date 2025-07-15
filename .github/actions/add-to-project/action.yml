@@ -177,6 +177,7 @@ runs:
             ... on ProjectV2 {
               fields(first: 100) {
                 nodes {
+                  __typename
                   ... on ProjectV2Field {
                     id
                     name
@@ -199,35 +200,14 @@ runs:
         FIELDS_RESPONSE=$(gh api graphql -f query="$FIELDS_QUERY" -f projectId="$PROJECT_ID")
         echo "Fields response: $FIELDS_RESPONSE"
         
-        # Look for existing Parent field
-        PARENT_FIELD_ID=$(echo "$FIELDS_RESPONSE" | jq -r '.data.node.fields.nodes[] | select(.name == "Parent") | .id // empty')
+        # Look for existing Parent issue field (GitHub's built-in field)
+        PARENT_FIELD_ID=$(echo "$FIELDS_RESPONSE" | jq -r '.data.node.fields.nodes[] | select(.name == "Parent issue") | .id // empty')
         
         if [ -z "$PARENT_FIELD_ID" ] || [ "$PARENT_FIELD_ID" = "null" ]; then
-          echo "Parent field not found, creating it..."
-          
-          # Check rate limit before GraphQL mutation
-          check_rate_limit
-          
-          # Create Parent field
-          CREATE_FIELD_MUTATION='mutation($projectId: ID!, $name: String!, $dataType: ProjectV2CustomFieldType!) {
-            createProjectV2Field(input: {projectId: $projectId, name: $name, dataType: $dataType}) {
-              projectV2Field {
-                id
-              }
-            }
-          }'
-          
-          CREATE_FIELD_RESPONSE=$(gh api graphql -f query="$CREATE_FIELD_MUTATION" -f projectId="$PROJECT_ID" -f name="Parent" -f dataType="TEXT")
-          PARENT_FIELD_ID=$(echo "$CREATE_FIELD_RESPONSE" | jq -r '.data.createProjectV2Field.projectV2Field.id // empty')
-          
-          if [ -n "$PARENT_FIELD_ID" ] && [ "$PARENT_FIELD_ID" != "null" ]; then
-            echo "Created Parent field with ID: $PARENT_FIELD_ID"
-          else
-            echo "Warning: Failed to create Parent field"
-            echo "Response: $CREATE_FIELD_RESPONSE"
-          fi
+          echo "Parent issue field not found in project. Cannot establish parent-child relationships."
+          echo "Please ensure your GitHub Project has the 'Parent issue' field enabled."
         else
-          echo "Found existing Parent field with ID: $PARENT_FIELD_ID"
+          echo "Found existing Parent issue field with ID: $PARENT_FIELD_ID"
         fi
 
         # Now establish parent-child relationships using project item field updates
@@ -288,13 +268,35 @@ runs:
                 }
               }'
               
-              # Set the parent field value to the parent issue number as text
+              # Set the parent field value to reference the parent issue's Global ID
+              # For PARENT_ISSUE field type, we need to provide the parent issue's Global ID
+              # First, get the parent issue's Global ID from the target repository
+              
+              # Check rate limit before GraphQL query for parent issue ID
+              check_rate_limit
+              
+              PARENT_ISSUE_QUERY='query($owner: String!, $repo: String!, $issueNumber: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  issue(number: $issueNumber) {
+                    id
+                  }
+                }
+              }'
+              
+              PARENT_ISSUE_RESPONSE=$(gh api graphql -f query="$PARENT_ISSUE_QUERY" -f owner="$TARGET_OWNER" -f repo="$TARGET_REPO" -F issueNumber="$TARGET_PARENT")
+              PARENT_ISSUE_ID=$(echo "$PARENT_ISSUE_RESPONSE" | jq -r '.data.repository.issue.id')
+              
+              if [ -z "$PARENT_ISSUE_ID" ] || [ "$PARENT_ISSUE_ID" = "null" ]; then
+                echo "Warning: Could not get Global ID for parent issue #$TARGET_PARENT"
+                continue
+              fi
+              
               UPDATE_FIELD_RESPONSE=$(gh api graphql \
                 -f query="$UPDATE_FIELD_MUTATION" \
                 -f projectId="$PROJECT_ID" \
                 -f itemId="$CHILD_ITEM_ID" \
                 -f fieldId="$PARENT_FIELD_ID" \
-                -f value="{\"text\": \"#$TARGET_PARENT\"}")
+                -f value="{\"issueId\": \"$PARENT_ISSUE_ID\"}")
               
               # Check if the update was successful
               if echo "$UPDATE_FIELD_RESPONSE" | jq -e '.data.updateProjectV2ItemFieldValue.projectV2Item.id' >/dev/null 2>&1; then
