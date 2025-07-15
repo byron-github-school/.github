@@ -251,30 +251,10 @@ runs:
               
               echo "Setting parent-child relationship: Child item $CHILD_ITEM_ID (issue #$TARGET_CHILD) -> Parent item $PARENT_ITEM_ID (issue #$TARGET_PARENT)"
               
-              # Check rate limit before GraphQL mutation
-              check_rate_limit
-              
-              # Update the child item's Parent field to reference the parent issue number
-              UPDATE_FIELD_MUTATION='mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: ProjectV2FieldValue!) {
-                updateProjectV2ItemFieldValue(input: {
-                  projectId: $projectId,
-                  itemId: $itemId,
-                  fieldId: $fieldId,
-                  value: $value
-                }) {
-                  projectV2Item {
-                    id
-                  }
-                }
-              }'
-              
-              # Set the parent field value to reference the parent issue's Global ID
-              # For PARENT_ISSUE field type, we need to provide the parent issue's Global ID
-              # First, get the parent issue's Global ID from the target repository
-              
               # Check rate limit before GraphQL query for parent issue ID
               check_rate_limit
               
+              # Get the parent issue's Global ID from the target repository (needed for PARENT_ISSUE field)
               PARENT_ISSUE_QUERY='query($owner: String!, $repo: String!, $issueNumber: Int!) {
                 repository(owner: $owner, name: $repo) {
                   issue(number: $issueNumber) {
@@ -291,13 +271,35 @@ runs:
                 continue
               fi
               
-              # For PARENT_ISSUE field type, the value should be the parent issue's Global ID as a string
+              # For PARENT_ISSUE field type in GitHub Projects v2, use proper JSON structure
+              # Based on GitHub's GraphQL schema, ProjectV2FieldValue for PARENT_ISSUE might need a specific format
+              # Try using the issue Global ID in a JSON object with proper null handling
+              PARENT_FIELD_VALUE=$(jq -n --arg parentId "$PARENT_ISSUE_ID" '{
+                text: null,
+                number: null,
+                date: null,
+                singleSelectOptionId: null,
+                iterationId: null,
+                issueId: $parentId
+              }')
+              
               UPDATE_FIELD_RESPONSE=$(gh api graphql \
-                -f query="$UPDATE_FIELD_MUTATION" \
-                -f projectId="$PROJECT_ID" \
-                -f itemId="$CHILD_ITEM_ID" \
-                -f fieldId="$PARENT_FIELD_ID" \
-                -f value="$PARENT_ISSUE_ID")
+                --raw-field query="mutation(\$projectId: ID!, \$itemId: ID!, \$fieldId: ID!, \$value: ProjectV2FieldValue!) {
+                  updateProjectV2ItemFieldValue(input: {
+                    projectId: \$projectId,
+                    itemId: \$itemId,
+                    fieldId: \$fieldId,
+                    value: \$value
+                  }) {
+                    projectV2Item {
+                      id
+                    }
+                  }
+                }" \
+                --field projectId="$PROJECT_ID" \
+                --field itemId="$CHILD_ITEM_ID" \
+                --field fieldId="$PARENT_FIELD_ID" \
+                --raw-field value="$PARENT_FIELD_VALUE")
               
               # Check if the update was successful
               if echo "$UPDATE_FIELD_RESPONSE" | jq -e '.data.updateProjectV2ItemFieldValue.projectV2Item.id' >/dev/null 2>&1; then
