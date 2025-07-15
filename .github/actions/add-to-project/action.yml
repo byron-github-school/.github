@@ -296,7 +296,7 @@ runs:
                 -f projectId="$PROJECT_ID" \
                 -f itemId="$CHILD_ITEM_ID" \
                 -f fieldId="$PARENT_FIELD_ID" \
-                -f value="{\"issueId\": \"$PARENT_ISSUE_ID\"}")
+                -f value="$PARENT_ISSUE_ID")
               
               # Check if the update was successful
               if echo "$UPDATE_FIELD_RESPONSE" | jq -e '.data.updateProjectV2ItemFieldValue.projectV2Item.id' >/dev/null 2>&1; then
