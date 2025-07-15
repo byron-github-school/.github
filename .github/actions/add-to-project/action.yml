@@ -84,18 +84,28 @@ runs:
         echo "Contents of parent_child_links.json before adding issues to the project:"
         cat parent_child_links.json
 
-        # Add all issues to the project (using target repository issues)
-        for source_parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
+        # Initialize file to track project item IDs
+        echo "{}" > project_item_mapping.json
+
+        # Get all unique issue numbers that need to be added to the project
+        ALL_PARENT_ISSUES=$(jq -r 'keys_unsorted[]' parent_child_links.json)
+        ALL_CHILD_ISSUES=$(jq -r '.[] | .[].number' parent_child_links.json)
+        ALL_UNIQUE_ISSUES=$(echo -e "$ALL_PARENT_ISSUES\n$ALL_CHILD_ISSUES" | sort -n | uniq)
+        
+        echo "All issues to add to project: $ALL_UNIQUE_ISSUES"
+
+        # Add all issues to the project first (both parents and children)
+        for source_issue_number in $ALL_UNIQUE_ISSUES; do
           # Get the target issue number from mapping
-          TARGET_PARENT=$(jq -r --arg source "$source_parent" '.[$source] // empty' source_target_mapping.json)
+          TARGET_ISSUE=$(jq -r --arg source "$source_issue_number" '.[$source] // empty' source_target_mapping.json)
           
-          if [ -z "$TARGET_PARENT" ] || [ "$TARGET_PARENT" = "null" ]; then
-            echo "Warning: No target mapping found for source issue #$source_parent"
-            log_broken_url "https://github.com/$SOURCE_OWNER/$SOURCE_REPO/issues/$source_parent" "No target mapping found"
+          if [ -z "$TARGET_ISSUE" ] || [ "$TARGET_ISSUE" = "null" ]; then
+            echo "Warning: No target mapping found for source issue #$source_issue_number"
+            log_broken_url "https://github.com/$SOURCE_OWNER/$SOURCE_REPO/issues/$source_issue_number" "No target mapping found"
             continue
           fi
           
-          echo "Adding target issue #$TARGET_PARENT (from source #$source_parent) to the project"
+          echo "Adding target issue #$TARGET_ISSUE (from source #$source_issue_number) to the project"
           
           # Check rate limit before GraphQL query for issue ID
           check_rate_limit
@@ -109,13 +119,13 @@ runs:
             }
           }'
           
-          ISSUE_RESPONSE=$(gh api graphql -f query="$ISSUE_QUERY" -f owner="$TARGET_OWNER" -f repo="$TARGET_REPO" -F issueNumber="$TARGET_PARENT")
+          ISSUE_RESPONSE=$(gh api graphql -f query="$ISSUE_QUERY" -f owner="$TARGET_OWNER" -f repo="$TARGET_REPO" -F issueNumber="$TARGET_ISSUE")
           ISSUE_ID=$(echo "$ISSUE_RESPONSE" | jq -r '.data.repository.issue.id')
           echo "Target Issue Global ID: ${ISSUE_ID}"
           
           if [ -z "$ISSUE_ID" ] || [ "$ISSUE_ID" = "null" ]; then
-            echo "Warning: Could not get Global ID for target issue #$TARGET_PARENT"
-            log_broken_url "https://github.com/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_PARENT" "Could not get Global ID"
+            echo "Warning: Could not get Global ID for target issue #$TARGET_ISSUE"
+            log_broken_url "https://github.com/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_ISSUE" "Could not get Global ID"
             continue
           fi
           
@@ -134,65 +144,168 @@ runs:
           ADD_RESPONSE=$(gh api graphql -f query="$ADD_MUTATION" -f projectId="$PROJECT_ID" -f contentId="$ISSUE_ID")
           echo "Add response: $ADD_RESPONSE"
           
-          echo "Target issue #$TARGET_PARENT added to the project"
+          # Extract project item ID and store mapping
+          PROJECT_ITEM_ID=$(echo "$ADD_RESPONSE" | jq -r '.data.addProjectV2ItemById.item.id // empty')
+          if [ -n "$PROJECT_ITEM_ID" ] && [ "$PROJECT_ITEM_ID" != "null" ]; then
+            # Map target issue number to project item ID
+            jq --arg issue "$TARGET_ISSUE" \
+               --arg item_id "$PROJECT_ITEM_ID" \
+               '.[$issue] = $item_id' \
+               project_item_mapping.json > project_item_mapping_temp.json && \
+               mv project_item_mapping_temp.json project_item_mapping.json
+            echo "Target issue #$TARGET_ISSUE added to project with item ID: $PROJECT_ITEM_ID"
+          else
+            echo "Warning: Failed to get project item ID for issue #$TARGET_ISSUE"
+          fi
         done
 
-        # Log the contents of the JSON file before linking child issues
+        # Log the contents of the JSON files before linking child issues
         echo "Contents of parent_child_links.json before linking child issues:"
         cat parent_child_links.json
+        echo "Contents of project_item_mapping.json:"
+        cat project_item_mapping.json
 
-        # Link child issues to their parents (using target repository issue numbers)
-        for source_parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
-          # Get the target parent issue number
-          TARGET_PARENT=$(jq -r --arg source "$source_parent" '.[$source] // empty' source_target_mapping.json)
+        # Get or create the Parent field in the project
+        echo "Getting project fields to find or create Parent field..."
+        
+        # Check rate limit before GraphQL query
+        check_rate_limit
+        
+        # Get project fields
+        FIELDS_QUERY='query($projectId: ID!) {
+          node(id: $projectId) {
+            ... on ProjectV2 {
+              fields(first: 100) {
+                nodes {
+                  ... on ProjectV2Field {
+                    id
+                    name
+                    dataType
+                  }
+                  ... on ProjectV2IterationField {
+                    id
+                    name
+                  }
+                  ... on ProjectV2SingleSelectField {
+                    id
+                    name
+                  }
+                }
+              }
+            }
+          }
+        }'
+        
+        FIELDS_RESPONSE=$(gh api graphql -f query="$FIELDS_QUERY" -f projectId="$PROJECT_ID")
+        echo "Fields response: $FIELDS_RESPONSE"
+        
+        # Look for existing Parent field
+        PARENT_FIELD_ID=$(echo "$FIELDS_RESPONSE" | jq -r '.data.node.fields.nodes[] | select(.name == "Parent") | .id // empty')
+        
+        if [ -z "$PARENT_FIELD_ID" ] || [ "$PARENT_FIELD_ID" = "null" ]; then
+          echo "Parent field not found, creating it..."
           
-          if [ -z "$TARGET_PARENT" ] || [ "$TARGET_PARENT" = "null" ]; then
-            echo "Warning: No target mapping found for source parent issue #$source_parent"
-            continue
+          # Check rate limit before GraphQL mutation
+          check_rate_limit
+          
+          # Create Parent field
+          CREATE_FIELD_MUTATION='mutation($projectId: ID!, $name: String!, $dataType: ProjectV2CustomFieldType!) {
+            createProjectV2Field(input: {projectId: $projectId, name: $name, dataType: $dataType}) {
+              projectV2Field {
+                id
+              }
+            }
+          }'
+          
+          CREATE_FIELD_RESPONSE=$(gh api graphql -f query="$CREATE_FIELD_MUTATION" -f projectId="$PROJECT_ID" -f name="Parent" -f dataType="TEXT")
+          PARENT_FIELD_ID=$(echo "$CREATE_FIELD_RESPONSE" | jq -r '.data.createProjectV2Field.projectV2Field.id // empty')
+          
+          if [ -n "$PARENT_FIELD_ID" ] && [ "$PARENT_FIELD_ID" != "null" ]; then
+            echo "Created Parent field with ID: $PARENT_FIELD_ID"
+          else
+            echo "Warning: Failed to create Parent field"
+            echo "Response: $CREATE_FIELD_RESPONSE"
           fi
-          
-          for child in $(jq -c --arg parent "$source_parent" '.[$parent][]' parent_child_links.json); do
-            SOURCE_CHILD_NUMBER=$(echo "$child" | jq -r '.number')
+        else
+          echo "Found existing Parent field with ID: $PARENT_FIELD_ID"
+        fi
+
+        # Now establish parent-child relationships using project item field updates
+        if [ -n "$PARENT_FIELD_ID" ] && [ "$PARENT_FIELD_ID" != "null" ]; then
+          for source_parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
+            # Get the target parent issue number
+            TARGET_PARENT=$(jq -r --arg source "$source_parent" '.[$source] // empty' source_target_mapping.json)
             
-            # Get the target child issue number
-            TARGET_CHILD=$(jq -r --arg source "$SOURCE_CHILD_NUMBER" '.[$source] // empty' source_target_mapping.json)
-            
-            if [ -z "$TARGET_CHILD" ] || [ "$TARGET_CHILD" = "null" ]; then
-              echo "Warning: No target mapping found for source child issue #$SOURCE_CHILD_NUMBER"
-              log_broken_url "https://github.com/$SOURCE_OWNER/$SOURCE_REPO/issues/$SOURCE_CHILD_NUMBER" "No target mapping found for child issue"
+            if [ -z "$TARGET_PARENT" ] || [ "$TARGET_PARENT" = "null" ]; then
+              echo "Warning: No target mapping found for source parent issue #$source_parent"
               continue
             fi
             
-            echo "Linking target child issue #$TARGET_CHILD to target parent issue #$TARGET_PARENT (from source #$SOURCE_CHILD_NUMBER -> #$source_parent)"
+            # Get the parent project item ID
+            PARENT_ITEM_ID=$(jq -r --arg issue "$TARGET_PARENT" '.[$issue] // empty' project_item_mapping.json)
             
-            # Check if child issue exists in target repository before linking
-            # Check rate limit before REST API call
-            check_rate_limit
+            if [ -z "$PARENT_ITEM_ID" ] || [ "$PARENT_ITEM_ID" = "null" ]; then
+              echo "Warning: No project item ID found for parent issue #$TARGET_PARENT"
+              continue
+            fi
             
-            CHILD_CHECK_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
-              -H "Authorization: token $GITHUB_TOKEN" \
-              "https://api.github.com/repos/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_CHILD")
-            
-            if [ "$CHILD_CHECK_RESPONSE" = "200" ]; then
-              # Check rate limit before REST API call
+            for child in $(jq -c --arg parent "$source_parent" '.[$parent][]' parent_child_links.json); do
+              SOURCE_CHILD_NUMBER=$(echo "$child" | jq -r '.number')
+              
+              # Get the target child issue number
+              TARGET_CHILD=$(jq -r --arg source "$SOURCE_CHILD_NUMBER" '.[$source] // empty' source_target_mapping.json)
+              
+              if [ -z "$TARGET_CHILD" ] || [ "$TARGET_CHILD" = "null" ]; then
+                echo "Warning: No target mapping found for source child issue #$SOURCE_CHILD_NUMBER"
+                log_broken_url "https://github.com/$SOURCE_OWNER/$SOURCE_REPO/issues/$SOURCE_CHILD_NUMBER" "No target mapping found for child issue"
+                continue
+              fi
+              
+              # Get the child project item ID
+              CHILD_ITEM_ID=$(jq -r --arg issue "$TARGET_CHILD" '.[$issue] // empty' project_item_mapping.json)
+              
+              if [ -z "$CHILD_ITEM_ID" ] || [ "$CHILD_ITEM_ID" = "null" ]; then
+                echo "Warning: No project item ID found for child issue #$TARGET_CHILD"
+                continue
+              fi
+              
+              echo "Setting parent-child relationship: Child item $CHILD_ITEM_ID (issue #$TARGET_CHILD) -> Parent item $PARENT_ITEM_ID (issue #$TARGET_PARENT)"
+              
+              # Check rate limit before GraphQL mutation
               check_rate_limit
               
-              COMMENT_RESPONSE=$(curl -s -X POST \
-                -H "Authorization: token $GITHUB_TOKEN" \
-                -H "Accept: application/vnd.github.v3+json" \
-                -d "{\"body\": \"Child of: #$TARGET_PARENT\"}" \
-                "https://api.github.com/repos/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_CHILD/comments")
+              # Update the child item's Parent field to reference the parent issue number
+              UPDATE_FIELD_MUTATION='mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!, $value: ProjectV2FieldValue!) {
+                updateProjectV2ItemFieldValue(input: {
+                  projectId: $projectId,
+                  itemId: $itemId,
+                  fieldId: $fieldId,
+                  value: $value
+                }) {
+                  projectV2Item {
+                    id
+                  }
+                }
+              }'
               
-              # Check if the comment was created successfully
-              if echo "$COMMENT_RESPONSE" | jq -e '.id' >/dev/null 2>&1; then
-                echo "Child Issue #$TARGET_CHILD linked to Parent Issue #$TARGET_PARENT"
+              # Set the parent field value to the parent issue number as text
+              UPDATE_FIELD_RESPONSE=$(gh api graphql \
+                -f query="$UPDATE_FIELD_MUTATION" \
+                -f projectId="$PROJECT_ID" \
+                -f itemId="$CHILD_ITEM_ID" \
+                -f fieldId="$PARENT_FIELD_ID" \
+                -f value="{\"text\": \"#$TARGET_PARENT\"}")
+              
+              # Check if the update was successful
+              if echo "$UPDATE_FIELD_RESPONSE" | jq -e '.data.updateProjectV2ItemFieldValue.projectV2Item.id' >/dev/null 2>&1; then
+                echo "Successfully set parent-child relationship: Child issue #$TARGET_CHILD -> Parent issue #$TARGET_PARENT"
               else
-                echo "Warning: Failed to link child issue #$TARGET_CHILD to parent #$TARGET_PARENT"
-                log_broken_url "https://github.com/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_CHILD" "Failed to create parent link comment"
+                echo "Warning: Failed to set parent field for child issue #$TARGET_CHILD"
+                echo "Response: $UPDATE_FIELD_RESPONSE"
+                log_broken_url "https://github.com/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_CHILD" "Failed to set parent field in project"
               fi
-            else
-              echo "Warning: Child issue #$TARGET_CHILD does not exist in target repository"
-              log_broken_url "https://github.com/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_CHILD" "Child issue does not exist in target repository (HTTP $CHILD_CHECK_RESPONSE)"
-            fi
+            done
           done
-        done
+        else
+          echo "Warning: Could not create or find Parent field, skipping parent-child relationship setup"
+        fi
