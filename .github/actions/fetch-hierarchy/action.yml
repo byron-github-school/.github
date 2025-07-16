@@ -317,3 +317,24 @@ runs:
         echo "Full parent-child hierarchy constructed and saved to parent_child_links.json."
         echo "Contents of parent_child_links.json after processing all issues:"
         cat parent_child_links.json
+        
+        echo "=== HIERARCHY ANALYSIS ==="
+        PARENT_COUNT=$(jq -r 'keys | length' parent_child_links.json)
+        TOTAL_CHILD_COUNT=$(jq -r '[.[] | length] | add // 0' parent_child_links.json)
+        echo "Total parent issues found: $PARENT_COUNT"
+        echo "Total child relationships found: $TOTAL_CHILD_COUNT"
+        
+        if [ "$PARENT_COUNT" -eq 0 ]; then
+          echo "WARNING: No parent-child relationships found!"
+          echo "This could indicate:"
+          echo "1. No issues have sub-issues in the source repository"
+          echo "2. The sub-issue detection method failed"
+          echo "3. API access issues preventing relationship discovery"
+        else
+          echo "SUCCESS: Parent-child hierarchy successfully built"
+          echo "Hierarchy breakdown:"
+          for parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
+            child_count=$(jq -r --arg parent "$parent" '.[$parent] | length' parent_child_links.json)
+            echo "  Parent issue #$parent has $child_count child issue(s)"
+          done
+        fi

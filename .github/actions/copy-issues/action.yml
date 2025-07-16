@@ -41,7 +41,15 @@ runs:
         # Combine parent and child issues, remove duplicates
         ALL_UNIQUE_ISSUES=$(echo -e "$ALL_ISSUES\n$CHILD_ISSUES" | sort -n | uniq)
         
-        echo "Issues to copy: $ALL_UNIQUE_ISSUES"
+        echo "=== COPY ANALYSIS ==="
+        echo "Parent issues from source: $ALL_ISSUES"
+        echo "Child issues from source: $CHILD_ISSUES"
+        echo "All unique issues to copy: $ALL_UNIQUE_ISSUES"
+        TOTAL_TO_COPY=$(echo "$ALL_UNIQUE_ISSUES" | wc -w)
+        echo "Total issues to copy: $TOTAL_TO_COPY"
+        
+        SUCCESSFULLY_COPIED=0
+        FAILED_TO_COPY=0
         
         # Copy each issue from source to target repository
         for source_issue_number in $ALL_UNIQUE_ISSUES; do
@@ -57,7 +65,9 @@ runs:
           # Check if source issue exists
           if ! echo "$SOURCE_ISSUE_RESPONSE" | jq -e '.number' >/dev/null 2>&1; then
             echo "Warning: Source issue #$source_issue_number not found or invalid response"
+            echo "Response: $SOURCE_ISSUE_RESPONSE"
             log_broken_url "https://github.com/$SOURCE_OWNER/$SOURCE_REPO/issues/$source_issue_number" "Source issue not found"
+            FAILED_TO_COPY=$((FAILED_TO_COPY + 1))
             continue
           fi
           
@@ -103,12 +113,26 @@ runs:
                mv source_target_mapping_temp.json source_target_mapping.json
             
             echo "Mapped source issue #$source_issue_number -> target issue #$TARGET_ISSUE_NUMBER"
+            SUCCESSFULLY_COPIED=$((SUCCESSFULLY_COPIED + 1))
           else
             echo "Error: Failed to create issue in target repository"
             echo "Response: $CREATE_RESPONSE"
             log_broken_url "https://github.com/$TARGET_OWNER/$TARGET_REPO" "Failed to create issue from source #$source_issue_number"
+            FAILED_TO_COPY=$((FAILED_TO_COPY + 1))
           fi
         done
+        
+        echo "=== COPY SUMMARY ==="
+        echo "Total issues to copy: $TOTAL_TO_COPY"
+        echo "Successfully copied: $SUCCESSFULLY_COPIED"
+        echo "Failed to copy: $FAILED_TO_COPY"
+        
+        if [ "$SUCCESSFULLY_COPIED" -eq "$TOTAL_TO_COPY" ]; then
+          echo "SUCCESS: All source issues successfully copied to target repository"
+        else
+          echo "WARNING: Issue copying incomplete!"
+          echo "This will cause relationship preservation failures in subsequent steps."
+        fi
         
         echo "=== Issue Copying Complete ==="
         echo "Source-to-target mapping:"
