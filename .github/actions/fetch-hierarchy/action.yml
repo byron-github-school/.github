@@ -156,10 +156,12 @@ runs:
             if [[ "$ISSUE_BODY" =~ \#[0-9]+ ]]; then
               echo "Found issue references in body, parsing task list for sub-issues..."
               echo "Issue body excerpt:"
-              # Use set +e to prevent broken pipe error from head command when issue body is large
-              set +e
-              echo "$ISSUE_BODY" | head -20 2>/dev/null
-              set -e
+              # Fix the broken pipe error by avoiding head command and using printf instead
+              if [ ${#ISSUE_BODY} -gt 500 ]; then
+                printf "%.500s...\n" "$ISSUE_BODY"
+              else
+                echo "$ISSUE_BODY"
+              fi
               
               # Extract issue numbers ONLY from task list items (- [ ] or - [x] #123)
               # This is more restrictive than timeline approach - only actual checklist items
