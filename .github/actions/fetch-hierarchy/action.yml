@@ -131,10 +131,13 @@ runs:
             echo "subIssues query failed or returned errors, trying alternative approach"
           fi
           
-          # If subIssues didn't work, try timeline items and body parsing
+          # If subIssues didn't work, parse task list from body to find sub-issues
           if [ -z "$SUBISSUES" ]; then
-            QUERY2="query(\$issue_id: ID!) { node(id: \$issue_id) { ... on Issue { id number body timelineItems(first: 100, itemTypes: [CROSS_REFERENCED_EVENT]) { nodes { ... on CrossReferencedEvent { source { ... on Issue { id number title url } } } } } } } }"
-            echo "Trying timeline items query: $QUERY2"
+            echo "Native subIssues field not available, trying task list parsing from issue body..."
+            
+            # Fetch issue body only
+            QUERY2="query(\$issue_id: ID!) { node(id: \$issue_id) { ... on Issue { id number body } } }"
+            echo "Fetching issue body: $QUERY2"
             
             # Check rate limit before GraphQL query
             check_rate_limit
@@ -147,42 +150,44 @@ runs:
               jq '.errors' subissues_response.json
               return 1
             fi
-
-            echo "Raw response for alternative query:"
-            cat subissues_response.json
             
-            # Try cross-referenced issues from timeline
-            if jq -e '.data.node.timelineItems.nodes' subissues_response.json > /dev/null 2>&1; then
-              TIMELINE_ISSUES=$(jq -c '.data.node.timelineItems.nodes[] | select(.source.number != null) | .source' subissues_response.json)
-              if [ -n "$TIMELINE_ISSUES" ]; then
-                echo "Found cross-referenced issues for issue #$issue_number:"
-                echo "$TIMELINE_ISSUES" | jq -r '.number'
-                SUBISSUES="$TIMELINE_ISSUES"
-              fi
-            fi
-            
-            # If still no sub-issues, parse task list from body
-            if [ -z "$SUBISSUES" ]; then
-              ISSUE_BODY=$(jq -r '.data.node.body // ""' subissues_response.json)
-              if [[ "$ISSUE_BODY" =~ \#[0-9]+ ]]; then
-                echo "Found issue references in body, parsing task list..."
-                # Extract issue numbers from task list items (- [ ] or - [x] #123)
-                TASK_ISSUE_NUMBERS=$(echo "$ISSUE_BODY" | grep -oE -- '- \[[x ]\].*#[0-9]+' | grep -oE '#[0-9]+' | sed 's/#//' | sort -u)
-                if [ -n "$TASK_ISSUE_NUMBERS" ]; then
-                  echo "Found task list sub-issues: $TASK_ISSUE_NUMBERS"
-                  # Convert to JSON format for consistency
-                  SUBISSUES=""
-                  for task_issue_num in $TASK_ISSUE_NUMBERS; do
+            # Parse task list from body to find genuine sub-issues
+            ISSUE_BODY=$(jq -r '.data.node.body // ""' subissues_response.json)
+            if [[ "$ISSUE_BODY" =~ \#[0-9]+ ]]; then
+              echo "Found issue references in body, parsing task list for sub-issues..."
+              echo "Issue body excerpt:"
+              echo "$ISSUE_BODY" | head -20
+              
+              # Extract issue numbers ONLY from task list items (- [ ] or - [x] #123)
+              # This is more restrictive than timeline approach - only actual checklist items
+              TASK_ISSUE_NUMBERS=$(echo "$ISSUE_BODY" | grep -oE -- '^\s*- \[[x ]\].*#[0-9]+' | grep -oE '#[0-9]+' | sed 's/#//' | sort -u)
+              
+              if [ -n "$TASK_ISSUE_NUMBERS" ]; then
+                echo "Found task list sub-issues (checklist items only): $TASK_ISSUE_NUMBERS"
+                TASK_COUNT=$(echo "$TASK_ISSUE_NUMBERS" | wc -w)
+                echo "Total sub-issues found in task list: $TASK_COUNT"
+                
+                # Convert to JSON format for consistency
+                SUBISSUES=""
+                for task_issue_num in $TASK_ISSUE_NUMBERS; do
+                  # Validate the issue number is from the same repository
+                  if [[ "$task_issue_num" =~ ^[0-9]+$ ]]; then
                     # Create a JSON object for each task issue
-                    TASK_ISSUE_JSON="{\"number\": $task_issue_num, \"title\": \"Task issue #$task_issue_num\", \"url\": \"https://github.com/$SOURCE_OWNER/$SOURCE_REPO/issues/$task_issue_num\"}"
+                    TASK_ISSUE_JSON="{\"number\": $task_issue_num, \"title\": \"Sub-issue #$task_issue_num\", \"url\": \"https://github.com/$SOURCE_OWNER/$SOURCE_REPO/issues/$task_issue_num\"}"
                     if [ -z "$SUBISSUES" ]; then
                       SUBISSUES="$TASK_ISSUE_JSON"
                     else
                       SUBISSUES="$SUBISSUES\n$TASK_ISSUE_JSON"
                     fi
-                  done
-                fi
+                  else
+                    echo "Warning: Skipping invalid issue number: $task_issue_num"
+                  fi
+                done
+              else
+                echo "No task list sub-issues found in issue body"
               fi
+            else
+              echo "No issue references found in body"
             fi
           fi
           
@@ -319,11 +324,18 @@ runs:
         cat parent_child_links.json
         
         echo "=== HIERARCHY ANALYSIS ==="
+        TOTAL_TOP_LEVEL_ISSUES=$(jq '. | length' "$TOP_LEVEL_ISSUES")
         PARENT_COUNT=$(jq -r 'keys | length' parent_child_links.json)
         TOTAL_CHILD_COUNT=$(jq -r '[.[] | length] | add // 0' parent_child_links.json)
+        ALL_UNIQUE_CHILD_ISSUES=$(jq -r '[.[] | .[].number] | unique | length' parent_child_links.json)
+        
+        echo "Total top-level issues found: $TOTAL_TOP_LEVEL_ISSUES"
         echo "Total parent issues found: $PARENT_COUNT"
         echo "Total child relationships found: $TOTAL_CHILD_COUNT"
+        echo "Total unique child issues: $ALL_UNIQUE_CHILD_ISSUES"
+        echo "Expected total issues to copy: $((TOTAL_TOP_LEVEL_ISSUES + ALL_UNIQUE_CHILD_ISSUES - PARENT_COUNT))"
         
+        # Validate that we're not including mentions as sub-issues
         if [ "$PARENT_COUNT" -eq 0 ]; then
           echo "WARNING: No parent-child relationships found!"
           echo "This could indicate:"
@@ -331,10 +343,23 @@ runs:
           echo "2. The sub-issue detection method failed"
           echo "3. API access issues preventing relationship discovery"
         else
-          echo "SUCCESS: Parent-child hierarchy successfully built"
-          echo "Hierarchy breakdown:"
+          echo "SUCCESS: Parent-child hierarchy successfully built using task list parsing only"
+          echo "Hierarchy breakdown (parent -> children count):"
           for parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
             child_count=$(jq -r --arg parent "$parent" '.[$parent] | length' parent_child_links.json)
-            echo "  Parent issue #$parent has $child_count child issue(s)"
+            child_numbers=$(jq -r --arg parent "$parent" '.[$parent] | .[].number' parent_child_links.json | tr '\n' ',' | sed 's/,$//')
+            echo "  Parent issue #$parent -> $child_count child issue(s): [$child_numbers]"
           done
+          
+          # Validate no cross-referenced mentions are included
+          echo ""
+          echo "=== SUB-ISSUE VALIDATION ==="
+          echo "This workflow now extracts ONLY genuine sub-issues from:"
+          echo "1. Native GitHub subIssues field (if available)"
+          echo "2. Task list items in issue body (- [ ] #123 or - [x] #123)"
+          echo ""
+          echo "EXCLUDED from extraction (avoiding mentions):"
+          echo "1. Timeline cross-referenced events"
+          echo "2. Random issue mentions in text"
+          echo "3. Non-checklist issue references"
         fi

@@ -84,9 +84,6 @@ runs:
         echo "Contents of parent_child_links.json before adding issues to the project:"
         cat parent_child_links.json
 
-        echo "Contents of source_target_mapping.json:"
-        cat source_target_mapping.json
-
         # Initialize file to track project item IDs
         echo "{}" > project_item_mapping.json
 
@@ -95,36 +92,9 @@ runs:
         ALL_CHILD_ISSUES=$(jq -r '.[] | .[].number' parent_child_links.json)
         ALL_UNIQUE_ISSUES=$(echo -e "$ALL_PARENT_ISSUES\n$ALL_CHILD_ISSUES" | sort -n | uniq)
         
-        echo "=== ISSUE PROCESSING ANALYSIS ==="
-        echo "Parent issues from source: $ALL_PARENT_ISSUES"
-        echo "Child issues from source: $ALL_CHILD_ISSUES"
-        echo "All unique source issues: $ALL_UNIQUE_ISSUES"
-        echo "Total unique source issues to process: $(echo "$ALL_UNIQUE_ISSUES" | wc -w)"
-        
-        # Validate that all source issues have target mappings
-        echo "=== MAPPING VALIDATION ==="
-        MISSING_MAPPINGS=""
-        for source_issue in $ALL_UNIQUE_ISSUES; do
-          TARGET_ISSUE=$(jq -r --arg source "$source_issue" '.[$source] // empty' source_target_mapping.json)
-          if [ -z "$TARGET_ISSUE" ] || [ "$TARGET_ISSUE" = "null" ]; then
-            echo "ERROR: Missing target mapping for source issue #$source_issue"
-            MISSING_MAPPINGS="$MISSING_MAPPINGS $source_issue"
-          else
-            echo "OK: Source issue #$source_issue -> Target issue #$TARGET_ISSUE"
-          fi
-        done
-        
-        if [ -n "$MISSING_MAPPINGS" ]; then
-          echo "CRITICAL ERROR: Missing mappings for source issues:$MISSING_MAPPINGS"
-          echo "This will cause relationship preservation failures!"
-        else
-          echo "SUCCESS: All source issues have target mappings"
-        fi
+        echo "All issues to add to project: $ALL_UNIQUE_ISSUES"
 
         # Add all issues to the project first (both parents and children)
-        echo "=== ADDING ISSUES TO PROJECT ==="
-        SUCCESSFULLY_ADDED=0
-        FAILED_TO_ADD=0
         for source_issue_number in $ALL_UNIQUE_ISSUES; do
           # Get the target issue number from mapping
           TARGET_ISSUE=$(jq -r --arg source "$source_issue_number" '.[$source] // empty' source_target_mapping.json)
@@ -132,7 +102,6 @@ runs:
           if [ -z "$TARGET_ISSUE" ] || [ "$TARGET_ISSUE" = "null" ]; then
             echo "Warning: No target mapping found for source issue #$source_issue_number"
             log_broken_url "https://github.com/$SOURCE_OWNER/$SOURCE_REPO/issues/$source_issue_number" "No target mapping found"
-            FAILED_TO_ADD=$((FAILED_TO_ADD + 1))
             continue
           fi
           
@@ -157,7 +126,6 @@ runs:
           if [ -z "$ISSUE_ID" ] || [ "$ISSUE_ID" = "null" ]; then
             echo "Warning: Could not get Global ID for target issue #$TARGET_ISSUE"
             log_broken_url "https://github.com/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_ISSUE" "Could not get Global ID"
-            FAILED_TO_ADD=$((FAILED_TO_ADD + 1))
             continue
           fi
           
@@ -186,23 +154,10 @@ runs:
                project_item_mapping.json > project_item_mapping_temp.json && \
                mv project_item_mapping_temp.json project_item_mapping.json
             echo "Target issue #$TARGET_ISSUE added to project with item ID: $PROJECT_ITEM_ID"
-            SUCCESSFULLY_ADDED=$((SUCCESSFULLY_ADDED + 1))
           else
             echo "Warning: Failed to get project item ID for issue #$TARGET_ISSUE"
-            FAILED_TO_ADD=$((FAILED_TO_ADD + 1))
           fi
         done
-        
-        echo "=== PROJECT ADDITION SUMMARY ==="
-        echo "Successfully added to project: $SUCCESSFULLY_ADDED issues"
-        echo "Failed to add to project: $FAILED_TO_ADD issues"
-        TOTAL_SOURCE_ISSUES=$(echo "$ALL_UNIQUE_ISSUES" | wc -w)
-        echo "Total source issues: $TOTAL_SOURCE_ISSUES"
-        if [ "$SUCCESSFULLY_ADDED" -eq "$TOTAL_SOURCE_ISSUES" ]; then
-          echo "SUCCESS: All source issues successfully added to project"
-        else
-          echo "WARNING: Issue quantity mismatch detected!"
-        fi
 
         # Log the contents of the JSON files before linking child issues
         echo "Contents of parent_child_links.json before linking child issues:"
@@ -214,51 +169,10 @@ runs:
         # This establishes parent-child relationships at the repository level, 
         # which should automatically reflect in any GitHub Projects that include these issues
 
-        # Log the contents of the JSON files before linking child issues
-        echo "Contents of parent_child_links.json before linking child issues:"
-        cat parent_child_links.json
-        echo "Contents of project_item_mapping.json:"
-        cat project_item_mapping.json
-
         # Now establish parent-child relationships using the addSubIssue mutation
         # Based on GitHub's documentation: https://github.com/orgs/community/discussions/148714
         # The correct approach is to use the addSubIssue mutation instead of updating project field values
-        echo "=== ESTABLISHING PARENT-CHILD RELATIONSHIPS ==="
         echo "Establishing parent-child relationships using addSubIssue mutation..."
-        
-        # First, test if addSubIssue mutation is available in the target repository
-        echo "Testing addSubIssue mutation availability..."
-        TEST_MUTATION_QUERY='{
-          __type(name: "Mutation") {
-            fields {
-              name
-            }
-          }
-        }'
-        
-        check_rate_limit
-        MUTATION_TEST_RESPONSE=$(gh api graphql -f query="$TEST_MUTATION_QUERY")
-        MUTATION_AVAILABLE=$(echo "$MUTATION_TEST_RESPONSE" | jq -r '.data.__type.fields[] | select(.name == "addSubIssue") | .name // empty')
-        
-        if [ -n "$MUTATION_AVAILABLE" ]; then
-          echo "SUCCESS: addSubIssue mutation is available in target repository"
-          USE_ADD_SUB_ISSUE=true
-        else
-          echo "WARNING: addSubIssue mutation not available in target repository"
-          echo "Will use fallback method: adding comments to establish relationships"
-          USE_ADD_SUB_ISSUE=false
-        fi
-        
-        # Count expected relationships
-        TOTAL_EXPECTED_RELATIONSHIPS=0
-        for source_parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
-          CHILD_COUNT=$(jq -r --arg parent "$source_parent" '.[$parent] | length' parent_child_links.json)
-          TOTAL_EXPECTED_RELATIONSHIPS=$((TOTAL_EXPECTED_RELATIONSHIPS + CHILD_COUNT))
-        done
-        echo "Total expected relationships to establish: $TOTAL_EXPECTED_RELATIONSHIPS"
-        
-        SUCCESSFUL_RELATIONSHIPS=0
-        FAILED_RELATIONSHIPS=0
         
         for source_parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
           # Get the target parent issue number
@@ -266,8 +180,6 @@ runs:
           
           if [ -z "$TARGET_PARENT" ] || [ "$TARGET_PARENT" = "null" ]; then
             echo "Warning: No target mapping found for source parent issue #$source_parent"
-            CHILD_COUNT=$(jq -r --arg parent "$source_parent" '.[$parent] | length' parent_child_links.json)
-            FAILED_RELATIONSHIPS=$((FAILED_RELATIONSHIPS + CHILD_COUNT))
             continue
           fi
           
@@ -290,8 +202,6 @@ runs:
           
           if [ -z "$PARENT_ISSUE_GLOBAL_ID" ] || [ "$PARENT_ISSUE_GLOBAL_ID" = "null" ]; then
             echo "Warning: Could not get Global ID for parent issue #$TARGET_PARENT"
-            CHILD_COUNT=$(jq -r --arg parent "$source_parent" '.[$parent] | length' parent_child_links.json)
-            FAILED_RELATIONSHIPS=$((FAILED_RELATIONSHIPS + CHILD_COUNT))
             continue
           fi
           
@@ -306,7 +216,6 @@ runs:
             if [ -z "$TARGET_CHILD" ] || [ "$TARGET_CHILD" = "null" ]; then
               echo "Warning: No target mapping found for source child issue #$SOURCE_CHILD_NUMBER"
               log_broken_url "https://github.com/$SOURCE_OWNER/$SOURCE_REPO/issues/$SOURCE_CHILD_NUMBER" "No target mapping found for child issue"
-              FAILED_RELATIONSHIPS=$((FAILED_RELATIONSHIPS + 1))
               continue
             fi
             
@@ -329,7 +238,6 @@ runs:
             
             if [ -z "$CHILD_ISSUE_GLOBAL_ID" ] || [ "$CHILD_ISSUE_GLOBAL_ID" = "null" ]; then
               echo "Warning: Could not get Global ID for child issue #$TARGET_CHILD"
-              FAILED_RELATIONSHIPS=$((FAILED_RELATIONSHIPS + 1))
               continue
             fi
             
@@ -337,164 +245,52 @@ runs:
             
             # Establish parent-child relationship using addSubIssue mutation
             echo "Setting parent-child relationship: Parent issue #$TARGET_PARENT -> Child issue #$TARGET_CHILD"
-            echo "Source relationship: Parent issue #$source_parent -> Child issue #$SOURCE_CHILD_NUMBER"
             
             # Check rate limit before GraphQL mutation
             check_rate_limit
             
-            if [ "$USE_ADD_SUB_ISSUE" = true ]; then
-              # Use addSubIssue mutation
-              ADD_SUB_ISSUE_MUTATION='mutation($issueId: ID!, $subIssueId: ID!) {
-                addSubIssue(input: {
-                  issueId: $issueId,
-                  subIssueId: $subIssueId
-                }) {
-                  issue {
-                    id
-                    number
-                    title
-                  }
-                  subIssue {
-                    id
-                    number
-                    title
-                  }
-                }
-              }'
-              
-              ADD_SUB_ISSUE_RESPONSE=$(gh api graphql \
-                -f query="$ADD_SUB_ISSUE_MUTATION" \
-                -f issueId="$PARENT_ISSUE_GLOBAL_ID" \
-                -f subIssueId="$CHILD_ISSUE_GLOBAL_ID" 2>&1 || true)
-              
-              echo "addSubIssue response: $ADD_SUB_ISSUE_RESPONSE"
-              
-              # Check if the mutation succeeded
-              if echo "$ADD_SUB_ISSUE_RESPONSE" | jq -e '.data.addSubIssue.issue.id' >/dev/null 2>&1; then
-                echo "SUCCESS: Parent-child relationship established: Parent issue #$TARGET_PARENT -> Child issue #$TARGET_CHILD"
-                SUCCESSFUL_RELATIONSHIPS=$((SUCCESSFUL_RELATIONSHIPS + 1))
-              else
-                echo "ERROR: Failed to establish parent-child relationship using addSubIssue"
-                FAILED_RELATIONSHIPS=$((FAILED_RELATIONSHIPS + 1))
-                
-                # Extract and log specific error messages
-                if echo "$ADD_SUB_ISSUE_RESPONSE" | jq -e '.errors' >/dev/null 2>&1; then
-                  echo "GraphQL errors:"
-                  echo "$ADD_SUB_ISSUE_RESPONSE" | jq -r '.errors[] | "- \(.message)"'
-                  echo "$ADD_SUB_ISSUE_RESPONSE" | jq -r '.errors[].extensions // empty'
-                else
-                  echo "No JSON errors found. Raw response:"
-                  echo "$ADD_SUB_ISSUE_RESPONSE"
-                fi
-                
-                log_broken_url "https://github.com/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_CHILD" "Failed to establish parent-child relationship using addSubIssue mutation: $(echo "$ADD_SUB_ISSUE_RESPONSE" | jq -r '.errors[0].message // "Unknown error"')"
-              fi
-            else
-              # Fallback: Add comment to child issue indicating parent relationship
-              echo "Using fallback method: Adding comment to establish relationship"
-              
-              COMMENT_BODY="**Parent Issue**: This issue is a sub-issue of #$TARGET_PARENT"
-              COMMENT_BODY="$COMMENT_BODY"$'\n\n'"*This relationship was established during issue migration from $SOURCE_OWNER/$SOURCE_REPO (source: #$source_parent -> #$SOURCE_CHILD_NUMBER)*"
-              
-              # Add comment to child issue
-              COMMENT_RESPONSE=$(curl -s -X POST \
-                -H "Authorization: token $GITHUB_TOKEN" \
-                -H "Accept: application/vnd.github.v3+json" \
-                -d "$(jq -n --arg body "$COMMENT_BODY" '{"body": $body}')" \
-                "https://api.github.com/repos/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_CHILD/comments")
-              
-              if echo "$COMMENT_RESPONSE" | jq -e '.id' >/dev/null 2>&1; then
-                echo "SUCCESS: Parent-child relationship comment added: Parent issue #$TARGET_PARENT -> Child issue #$TARGET_CHILD"
-                SUCCESSFUL_RELATIONSHIPS=$((SUCCESSFUL_RELATIONSHIPS + 1))
-              else
-                echo "ERROR: Failed to add parent-child relationship comment"
-                echo "Response: $COMMENT_RESPONSE"
-                FAILED_RELATIONSHIPS=$((FAILED_RELATIONSHIPS + 1))
-                log_broken_url "https://github.com/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_CHILD" "Failed to add parent-child relationship comment"
-              fi
-            fi
-          done
-        done
-        
-        echo "=== RELATIONSHIP ESTABLISHMENT SUMMARY ==="
-        echo "Total expected relationships: $TOTAL_EXPECTED_RELATIONSHIPS"
-        echo "Successfully established relationships: $SUCCESSFUL_RELATIONSHIPS"
-        echo "Failed relationship attempts: $FAILED_RELATIONSHIPS"
-        
-        if [ "$SUCCESSFUL_RELATIONSHIPS" -eq "$TOTAL_EXPECTED_RELATIONSHIPS" ]; then
-          echo "SUCCESS: All parent-child relationships successfully established!"
-          echo "Source and target repositories now have matching relationship structure."
-        else
-          echo "WARNING: Relationship preservation incomplete!"
-          echo "Expected: $TOTAL_EXPECTED_RELATIONSHIPS, Actual: $SUCCESSFUL_RELATIONSHIPS"
-          echo "This means the target repository does not have the same relationships as the source."
-        fi
-        
-        echo "=== FINAL VERIFICATION ==="
-        echo "Verifying that relationships are correctly established in target repository..."
-        
-        # Verify each relationship by checking if sub-issues exist
-        VERIFIED_RELATIONSHIPS=0
-        for source_parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
-          TARGET_PARENT=$(jq -r --arg source "$source_parent" '.[$source] // empty' source_target_mapping.json)
-          
-          if [ -z "$TARGET_PARENT" ] || [ "$TARGET_PARENT" = "null" ]; then
-            continue
-          fi
-          
-          for child in $(jq -c --arg parent "$source_parent" '.[$parent][]' parent_child_links.json); do
-            SOURCE_CHILD_NUMBER=$(echo "$child" | jq -r '.number')
-            TARGET_CHILD=$(jq -r --arg source "$SOURCE_CHILD_NUMBER" '.[$source] // empty' source_target_mapping.json)
-            
-            if [ -z "$TARGET_CHILD" ] || [ "$TARGET_CHILD" = "null" ]; then
-              continue
-            fi
-            
-            # Verify the relationship exists by checking the child issue
-            echo "Verifying relationship: Parent #$TARGET_PARENT -> Child #$TARGET_CHILD"
-            
-            check_rate_limit
-            
-            # Check if child issue exists and has parent relationship
-            VERIFY_QUERY='query($owner: String!, $repo: String!, $issueNumber: Int!) {
-              repository(owner: $owner, name: $repo) {
-                issue(number: $issueNumber) {
+            ADD_SUB_ISSUE_MUTATION='mutation($issueId: ID!, $subIssueId: ID!) {
+              addSubIssue(input: {
+                issueId: $issueId,
+                subIssueId: $subIssueId
+              }) {
+                issue {
                   id
                   number
                   title
-                  body
+                }
+                subIssue {
+                  id
+                  number
+                  title
                 }
               }
             }'
             
-            VERIFY_RESPONSE=$(gh api graphql -f query="$VERIFY_QUERY" -f owner="$TARGET_OWNER" -f repo="$TARGET_REPO" -F issueNumber="$TARGET_CHILD")
+            ADD_SUB_ISSUE_RESPONSE=$(gh api graphql \
+              -f query="$ADD_SUB_ISSUE_MUTATION" \
+              -f issueId="$PARENT_ISSUE_GLOBAL_ID" \
+              -f subIssueId="$CHILD_ISSUE_GLOBAL_ID" 2>&1 || true)
             
-            if echo "$VERIFY_RESPONSE" | jq -e '.data.repository.issue.id' >/dev/null 2>&1; then
-              # Check if the issue body or comments contain reference to parent
-              ISSUE_BODY=$(echo "$VERIFY_RESPONSE" | jq -r '.data.repository.issue.body // ""')
-              if [[ "$ISSUE_BODY" =~ "#$TARGET_PARENT" ]] || [[ "$ISSUE_BODY" =~ "Parent.*#$TARGET_PARENT" ]]; then
-                echo "VERIFIED: Relationship exists for Parent #$TARGET_PARENT -> Child #$TARGET_CHILD"
-                VERIFIED_RELATIONSHIPS=$((VERIFIED_RELATIONSHIPS + 1))
-              else
-                echo "WARNING: Relationship may not be properly established for Parent #$TARGET_PARENT -> Child #$TARGET_CHILD"
-              fi
+            echo "addSubIssue response: $ADD_SUB_ISSUE_RESPONSE"
+            
+            # Check if the mutation succeeded
+            if echo "$ADD_SUB_ISSUE_RESPONSE" | jq -e '.data.addSubIssue.issue.id' >/dev/null 2>&1; then
+              echo "SUCCESS: Parent-child relationship established: Parent issue #$TARGET_PARENT -> Child issue #$TARGET_CHILD"
             else
-              echo "ERROR: Could not verify child issue #$TARGET_CHILD"
+              echo "ERROR: Failed to establish parent-child relationship"
+              
+              # Extract and log specific error messages
+              if echo "$ADD_SUB_ISSUE_RESPONSE" | jq -e '.errors' >/dev/null 2>&1; then
+                echo "GraphQL errors:"
+                echo "$ADD_SUB_ISSUE_RESPONSE" | jq -r '.errors[] | "- \(.message)"'
+                echo "$ADD_SUB_ISSUE_RESPONSE" | jq -r '.errors[].extensions // empty'
+              else
+                echo "No JSON errors found. Raw response:"
+                echo "$ADD_SUB_ISSUE_RESPONSE"
+              fi
+              
+              log_broken_url "https://github.com/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_CHILD" "Failed to establish parent-child relationship using addSubIssue mutation: $(echo "$ADD_SUB_ISSUE_RESPONSE" | jq -r '.errors[0].message // "Unknown error"')"
             fi
           done
         done
-        
-        echo "=== FINAL SUMMARY ==="
-        echo "Expected relationships: $TOTAL_EXPECTED_RELATIONSHIPS"
-        echo "Successfully established: $SUCCESSFUL_RELATIONSHIPS"
-        echo "Verified as working: $VERIFIED_RELATIONSHIPS"
-        
-        if [ "$VERIFIED_RELATIONSHIPS" -eq "$TOTAL_EXPECTED_RELATIONSHIPS" ]; then
-          echo "🎉 SUCCESS: All parent-child relationships verified!"
-          echo "✅ Source and target repositories have identical relationship structure"
-          echo "✅ Same quantity of issues processed in source and target"
-        else
-          echo "⚠️  WARNING: Relationship verification incomplete"
-          echo "❌ Target repository relationships may not match source"
-          echo "This issue will cause incorrect hierarchy in GitHub Projects"
-        fi
