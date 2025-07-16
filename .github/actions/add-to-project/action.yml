@@ -125,7 +125,6 @@ runs:
         echo "=== ADDING ISSUES TO PROJECT ==="
         SUCCESSFULLY_ADDED=0
         FAILED_TO_ADD=0
-        
         for source_issue_number in $ALL_UNIQUE_ISSUES; do
           # Get the target issue number from mapping
           TARGET_ISSUE=$(jq -r --arg source "$source_issue_number" '.[$source] // empty' source_target_mapping.json)
@@ -204,6 +203,16 @@ runs:
         else
           echo "WARNING: Issue quantity mismatch detected!"
         fi
+
+        # Log the contents of the JSON files before linking child issues
+        echo "Contents of parent_child_links.json before linking child issues:"
+        cat parent_child_links.json
+        echo "Contents of project_item_mapping.json:"
+        cat project_item_mapping.json
+
+        # Note: Using addSubIssue mutation instead of project field updates
+        # This establishes parent-child relationships at the repository level, 
+        # which should automatically reflect in any GitHub Projects that include these issues
 
         # Log the contents of the JSON files before linking child issues
         echo "Contents of parent_child_links.json before linking child issues:"
@@ -384,9 +393,8 @@ runs:
               # Fallback: Add comment to child issue indicating parent relationship
               echo "Using fallback method: Adding comment to establish relationship"
               
-              COMMENT_BODY="**Parent Issue**: This issue is a sub-issue of #$TARGET_PARENT
-
-*This relationship was established during issue migration from $SOURCE_OWNER/$SOURCE_REPO (source: #$source_parent -> #$SOURCE_CHILD_NUMBER)*"
+              COMMENT_BODY="**Parent Issue**: This issue is a sub-issue of #$TARGET_PARENT"
+              COMMENT_BODY="$COMMENT_BODY"$'\n\n'"*This relationship was established during issue migration from $SOURCE_OWNER/$SOURCE_REPO (source: #$source_parent -> #$SOURCE_CHILD_NUMBER)*"
               
               # Add comment to child issue
               COMMENT_RESPONSE=$(curl -s -X POST \
