@@ -165,7 +165,10 @@ runs:
               
               # Extract issue numbers ONLY from task list items (- [ ] or - [x] #123)
               # This is more restrictive than timeline approach - only actual checklist items
-              TASK_ISSUE_NUMBERS=$(echo "$ISSUE_BODY" | grep -oE -- '^\s*- \[[x ]\].*#[0-9]+' | grep -oE '#[0-9]+' | sed 's/#//' | sort -u)
+              # Use temporary file to avoid broken pipe error
+              echo "$ISSUE_BODY" > /tmp/issue_body.txt 2>/dev/null || true
+              TASK_ISSUE_NUMBERS=$(grep -oE -- '^\s*- \[[x ]\].*#[0-9]+' /tmp/issue_body.txt 2>/dev/null | grep -oE '#[0-9]+' 2>/dev/null | sed 's/#//' 2>/dev/null | sort -u 2>/dev/null || true)
+              rm -f /tmp/issue_body.txt 2>/dev/null || true
               
               if [ -n "$TASK_ISSUE_NUMBERS" ]; then
                 echo "Found task list sub-issues (checklist items only): $TASK_ISSUE_NUMBERS"
