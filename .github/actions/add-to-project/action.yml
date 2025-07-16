@@ -84,18 +84,28 @@ runs:
         echo "Contents of parent_child_links.json before adding issues to the project:"
         cat parent_child_links.json
 
-        # Add all issues to the project (using target repository issues)
-        for source_parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
+        # Initialize file to track project item IDs
+        echo "{}" > project_item_mapping.json
+
+        # Get all unique issue numbers that need to be added to the project
+        ALL_PARENT_ISSUES=$(jq -r 'keys_unsorted[]' parent_child_links.json)
+        ALL_CHILD_ISSUES=$(jq -r '.[] | .[].number' parent_child_links.json)
+        ALL_UNIQUE_ISSUES=$(echo -e "$ALL_PARENT_ISSUES\n$ALL_CHILD_ISSUES" | sort -n | uniq)
+        
+        echo "All issues to add to project: $ALL_UNIQUE_ISSUES"
+
+        # Add all issues to the project first (both parents and children)
+        for source_issue_number in $ALL_UNIQUE_ISSUES; do
           # Get the target issue number from mapping
-          TARGET_PARENT=$(jq -r --arg source "$source_parent" '.[$source] // empty' source_target_mapping.json)
+          TARGET_ISSUE=$(jq -r --arg source "$source_issue_number" '.[$source] // empty' source_target_mapping.json)
           
-          if [ -z "$TARGET_PARENT" ] || [ "$TARGET_PARENT" = "null" ]; then
-            echo "Warning: No target mapping found for source issue #$source_parent"
-            log_broken_url "https://github.com/$SOURCE_OWNER/$SOURCE_REPO/issues/$source_parent" "No target mapping found"
+          if [ -z "$TARGET_ISSUE" ] || [ "$TARGET_ISSUE" = "null" ]; then
+            echo "Warning: No target mapping found for source issue #$source_issue_number"
+            log_broken_url "https://github.com/$SOURCE_OWNER/$SOURCE_REPO/issues/$source_issue_number" "No target mapping found"
             continue
           fi
           
-          echo "Adding target issue #$TARGET_PARENT (from source #$source_parent) to the project"
+          echo "Adding target issue #$TARGET_ISSUE (from source #$source_issue_number) to the project"
           
           # Check rate limit before GraphQL query for issue ID
           check_rate_limit
@@ -109,13 +119,13 @@ runs:
             }
           }'
           
-          ISSUE_RESPONSE=$(gh api graphql -f query="$ISSUE_QUERY" -f owner="$TARGET_OWNER" -f repo="$TARGET_REPO" -F issueNumber="$TARGET_PARENT")
+          ISSUE_RESPONSE=$(gh api graphql -f query="$ISSUE_QUERY" -f owner="$TARGET_OWNER" -f repo="$TARGET_REPO" -F issueNumber="$TARGET_ISSUE")
           ISSUE_ID=$(echo "$ISSUE_RESPONSE" | jq -r '.data.repository.issue.id')
           echo "Target Issue Global ID: ${ISSUE_ID}"
           
           if [ -z "$ISSUE_ID" ] || [ "$ISSUE_ID" = "null" ]; then
-            echo "Warning: Could not get Global ID for target issue #$TARGET_PARENT"
-            log_broken_url "https://github.com/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_PARENT" "Could not get Global ID"
+            echo "Warning: Could not get Global ID for target issue #$TARGET_ISSUE"
+            log_broken_url "https://github.com/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_ISSUE" "Could not get Global ID"
             continue
           fi
           
@@ -134,14 +144,36 @@ runs:
           ADD_RESPONSE=$(gh api graphql -f query="$ADD_MUTATION" -f projectId="$PROJECT_ID" -f contentId="$ISSUE_ID")
           echo "Add response: $ADD_RESPONSE"
           
-          echo "Target issue #$TARGET_PARENT added to the project"
+          # Extract project item ID and store mapping
+          PROJECT_ITEM_ID=$(echo "$ADD_RESPONSE" | jq -r '.data.addProjectV2ItemById.item.id // empty')
+          if [ -n "$PROJECT_ITEM_ID" ] && [ "$PROJECT_ITEM_ID" != "null" ]; then
+            # Map target issue number to project item ID
+            jq --arg issue "$TARGET_ISSUE" \
+               --arg item_id "$PROJECT_ITEM_ID" \
+               '.[$issue] = $item_id' \
+               project_item_mapping.json > project_item_mapping_temp.json && \
+               mv project_item_mapping_temp.json project_item_mapping.json
+            echo "Target issue #$TARGET_ISSUE added to project with item ID: $PROJECT_ITEM_ID"
+          else
+            echo "Warning: Failed to get project item ID for issue #$TARGET_ISSUE"
+          fi
         done
 
-        # Log the contents of the JSON file before linking child issues
+        # Log the contents of the JSON files before linking child issues
         echo "Contents of parent_child_links.json before linking child issues:"
         cat parent_child_links.json
+        echo "Contents of project_item_mapping.json:"
+        cat project_item_mapping.json
 
-        # Link child issues to their parents (using target repository issue numbers)
+        # Note: Using addSubIssue mutation instead of project field updates
+        # This establishes parent-child relationships at the repository level, 
+        # which should automatically reflect in any GitHub Projects that include these issues
+
+        # Now establish parent-child relationships using the addSubIssue mutation
+        # Based on GitHub's documentation: https://github.com/orgs/community/discussions/148714
+        # The correct approach is to use the addSubIssue mutation instead of updating project field values
+        echo "Establishing parent-child relationships using addSubIssue mutation..."
+        
         for source_parent in $(jq -r 'keys_unsorted[]' parent_child_links.json); do
           # Get the target parent issue number
           TARGET_PARENT=$(jq -r --arg source "$source_parent" '.[$source] // empty' source_target_mapping.json)
@@ -150,6 +182,30 @@ runs:
             echo "Warning: No target mapping found for source parent issue #$source_parent"
             continue
           fi
+          
+          # Get the parent issue's Global ID from the target repository
+          echo "Getting parent issue Global ID for issue #$TARGET_PARENT..."
+          
+          # Check rate limit before GraphQL query
+          check_rate_limit
+          
+          PARENT_ISSUE_QUERY='query($owner: String!, $repo: String!, $issueNumber: Int!) {
+            repository(owner: $owner, name: $repo) {
+              issue(number: $issueNumber) {
+                id
+              }
+            }
+          }'
+          
+          PARENT_ISSUE_RESPONSE=$(gh api graphql -f query="$PARENT_ISSUE_QUERY" -f owner="$TARGET_OWNER" -f repo="$TARGET_REPO" -F issueNumber="$TARGET_PARENT")
+          PARENT_ISSUE_GLOBAL_ID=$(echo "$PARENT_ISSUE_RESPONSE" | jq -r '.data.repository.issue.id')
+          
+          if [ -z "$PARENT_ISSUE_GLOBAL_ID" ] || [ "$PARENT_ISSUE_GLOBAL_ID" = "null" ]; then
+            echo "Warning: Could not get Global ID for parent issue #$TARGET_PARENT"
+            continue
+          fi
+          
+          echo "Parent issue #$TARGET_PARENT Global ID: $PARENT_ISSUE_GLOBAL_ID"
           
           for child in $(jq -c --arg parent "$source_parent" '.[$parent][]' parent_child_links.json); do
             SOURCE_CHILD_NUMBER=$(echo "$child" | jq -r '.number')
@@ -163,36 +219,78 @@ runs:
               continue
             fi
             
-            echo "Linking target child issue #$TARGET_CHILD to target parent issue #$TARGET_PARENT (from source #$SOURCE_CHILD_NUMBER -> #$source_parent)"
+            # Get the child issue's Global ID from the target repository
+            echo "Getting child issue Global ID for issue #$TARGET_CHILD..."
             
-            # Check if child issue exists in target repository before linking
-            # Check rate limit before REST API call
+            # Check rate limit before GraphQL query
             check_rate_limit
             
-            CHILD_CHECK_RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
-              -H "Authorization: token $GITHUB_TOKEN" \
-              "https://api.github.com/repos/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_CHILD")
+            CHILD_ISSUE_QUERY='query($owner: String!, $repo: String!, $issueNumber: Int!) {
+              repository(owner: $owner, name: $repo) {
+                issue(number: $issueNumber) {
+                  id
+                }
+              }
+            }'
             
-            if [ "$CHILD_CHECK_RESPONSE" = "200" ]; then
-              # Check rate limit before REST API call
-              check_rate_limit
-              
-              COMMENT_RESPONSE=$(curl -s -X POST \
-                -H "Authorization: token $GITHUB_TOKEN" \
-                -H "Accept: application/vnd.github.v3+json" \
-                -d "{\"body\": \"Child of: #$TARGET_PARENT\"}" \
-                "https://api.github.com/repos/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_CHILD/comments")
-              
-              # Check if the comment was created successfully
-              if echo "$COMMENT_RESPONSE" | jq -e '.id' >/dev/null 2>&1; then
-                echo "Child Issue #$TARGET_CHILD linked to Parent Issue #$TARGET_PARENT"
-              else
-                echo "Warning: Failed to link child issue #$TARGET_CHILD to parent #$TARGET_PARENT"
-                log_broken_url "https://github.com/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_CHILD" "Failed to create parent link comment"
-              fi
+            CHILD_ISSUE_RESPONSE=$(gh api graphql -f query="$CHILD_ISSUE_QUERY" -f owner="$TARGET_OWNER" -f repo="$TARGET_REPO" -F issueNumber="$TARGET_CHILD")
+            CHILD_ISSUE_GLOBAL_ID=$(echo "$CHILD_ISSUE_RESPONSE" | jq -r '.data.repository.issue.id')
+            
+            if [ -z "$CHILD_ISSUE_GLOBAL_ID" ] || [ "$CHILD_ISSUE_GLOBAL_ID" = "null" ]; then
+              echo "Warning: Could not get Global ID for child issue #$TARGET_CHILD"
+              continue
+            fi
+            
+            echo "Child issue #$TARGET_CHILD Global ID: $CHILD_ISSUE_GLOBAL_ID"
+            
+            # Establish parent-child relationship using addSubIssue mutation
+            echo "Setting parent-child relationship: Parent issue #$TARGET_PARENT -> Child issue #$TARGET_CHILD"
+            
+            # Check rate limit before GraphQL mutation
+            check_rate_limit
+            
+            ADD_SUB_ISSUE_MUTATION='mutation($issueId: ID!, $subIssueId: ID!) {
+              addSubIssue(input: {
+                issueId: $issueId,
+                subIssueId: $subIssueId
+              }) {
+                issue {
+                  id
+                  number
+                  title
+                }
+                subIssue {
+                  id
+                  number
+                  title
+                }
+              }
+            }'
+            
+            ADD_SUB_ISSUE_RESPONSE=$(gh api graphql \
+              -f query="$ADD_SUB_ISSUE_MUTATION" \
+              -f issueId="$PARENT_ISSUE_GLOBAL_ID" \
+              -f subIssueId="$CHILD_ISSUE_GLOBAL_ID" 2>&1 || true)
+            
+            echo "addSubIssue response: $ADD_SUB_ISSUE_RESPONSE"
+            
+            # Check if the mutation succeeded
+            if echo "$ADD_SUB_ISSUE_RESPONSE" | jq -e '.data.addSubIssue.issue.id' >/dev/null 2>&1; then
+              echo "SUCCESS: Parent-child relationship established: Parent issue #$TARGET_PARENT -> Child issue #$TARGET_CHILD"
             else
-              echo "Warning: Child issue #$TARGET_CHILD does not exist in target repository"
-              log_broken_url "https://github.com/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_CHILD" "Child issue does not exist in target repository (HTTP $CHILD_CHECK_RESPONSE)"
+              echo "ERROR: Failed to establish parent-child relationship"
+              
+              # Extract and log specific error messages
+              if echo "$ADD_SUB_ISSUE_RESPONSE" | jq -e '.errors' >/dev/null 2>&1; then
+                echo "GraphQL errors:"
+                echo "$ADD_SUB_ISSUE_RESPONSE" | jq -r '.errors[] | "- \(.message)"'
+                echo "$ADD_SUB_ISSUE_RESPONSE" | jq -r '.errors[].extensions // empty'
+              else
+                echo "No JSON errors found. Raw response:"
+                echo "$ADD_SUB_ISSUE_RESPONSE"
+              fi
+              
+              log_broken_url "https://github.com/$TARGET_OWNER/$TARGET_REPO/issues/$TARGET_CHILD" "Failed to establish parent-child relationship using addSubIssue mutation: $(echo "$ADD_SUB_ISSUE_RESPONSE" | jq -r '.errors[0].message // "Unknown error"')"
             fi
           done
         done

@@ -92,6 +92,7 @@ log_broken_url() {
 initialize_json_files() {
   echo "{}" > parent_child_links.json
   echo "{}" > source_target_mapping.json
+  echo "{}" > project_item_mapping.json
   echo "[]" > broken_urls.json
 }
 
