@@ -35,7 +35,8 @@ on:
 jobs:
   update-project:
     runs-on: ubuntu-latest
-
+    env:
+      GH_TOKEN: ${{ secrets[inputs.pat_secret] }}
     steps:
     - name: Checkout repository
       uses: actions/checkout@v3
