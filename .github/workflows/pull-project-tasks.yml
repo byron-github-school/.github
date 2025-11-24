@@ -37,6 +37,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ secrets[inputs.pat_secret] }}
+      GITHUB_TOKEN: ${{ secrets[inputs.pat_secret] }}  # Add this line for compatibility
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v3
